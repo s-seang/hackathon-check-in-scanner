@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event Check-in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <!-- ============ Sidebar ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3zm2 2v4h4V5zm8-2h8v8h-8zm2 2v4h4V5zM3 13h8v8H3zm2 2v4h4v-4zm8-2h3v3h-3zm5 0h3v3h-3zm-5 5h3v3h-3zm5 0h3v3h-3z"/></svg>
+      <span id="event-name">Event Check-in</span>
+    </div>
+
+    <nav class="nav">
+      <a href="#home" data-page="home"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Home</a>
+      <a href="#scan" data-page="scan"><svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16"/></svg>Check-in Scanner</a>
+      <a href="#participants" data-page="participants"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.4 3.2-5.5 6.5-5.5s5.9 2.1 6.5 5.5M16 4.8a3.5 3.5 0 0 1 0 6.4M18 14.8c1.9.7 3.1 2.6 3.5 5.2"/></svg>Participants</a>
+      <a href="#import" data-page="import"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>Import CSV</a>
+      <a href="#email" data-page="email"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/></svg>Send QR Codes</a>
+    </nav>
+
+    <div class="divider"></div>
+
+    <div class="side-section-title">Live</div>
+    <div class="side-stat"><span class="dot dot-green"></span>Present<b id="side-checked">0</b></div>
+    <div class="side-stat"><span class="dot dot-blue"></span>QR sent<b id="side-sent">0</b></div>
+    <div class="side-stat"><span class="dot dot-gray"></span>Participants<b id="side-total">0</b></div>
+  </aside>
+
+  <!-- ============ Main ============ -->
+  <main class="main">
+    <header class="topbar">
+      <form class="search" id="top-search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="top-search-input" placeholder="Search participants…" autocomplete="off">
+        <span class="kbd">/</span>
+      </form>
+      <div class="topbar-right">Present <b id="top-checked">0</b> / <span id="top-total">0</span></div>
+    </header>
+
+    <div class="content">
+
+      <!-- ===== Home ===== -->
+      <section class="page" id="page-home">
+        <h1>Overview</h1>
+        <h2 class="section-title">Today <span class="count" id="home-pct">0%</span></h2>
+        <div class="folders">
+          <div class="folder f-lavender">
+            <span class="folder-label">Participants</span>
+            <div class="folder-num" id="home-total">0</div>
+            <div class="folder-foot"><span>imported from CSV</span><a href="#participants">View</a></div>
+          </div>
+          <div class="folder f-blue">
+            <span class="folder-label">Present</span>
+            <div class="folder-num" id="home-checked">0</div>
+            <div class="folder-foot"><span id="home-remaining">0 still to arrive</span><a href="#scan">Scan</a></div>
+          </div>
+          <div class="folder f-peach">
+            <span class="folder-label">QR codes sent</span>
+            <div class="folder-num" id="home-sent">0</div>
+            <div class="folder-foot"><span id="home-failed">0 failed</span><a href="#email">Send</a></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Participants ===== -->
+      <section class="page" id="page-participants">
+        <div class="page-head">
+          <h1>Participants <span class="count" id="p-count">0</span></h1>
+          <div class="toolbar">
+            <button class="btn btn-light" id="btn-add"><span class="plus">+</span> Add</button>
+            <div class="menu-wrap">
+              <button class="btn btn-light" id="btn-export" aria-haspopup="true">
+                <svg class="ico" viewBox="0 0 24 24"><path d="M12 15V3m0 12-4-4m4 4 4-4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>Export
+              </button>
+              <div class="menu" id="menu-export">
+                <a href="/api/export/all.csv" download><b>All participants</b><span>Everyone, as CSV</span></a>
+                <a href="/api/export/checked-in.csv" download><b>Present only</b><span>In arrival order, as CSV</span></a>
+              </div>
+            </div>
+            <div class="menu-wrap">
+              <button class="btn btn-light icon-only" id="btn-more" aria-label="More">⋯</button>
+              <div class="menu" id="menu-more">
+                <button class="danger-item" id="delete-all"><b>Delete all participants</b><span>Start over for a new event</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="filterbar">
+          <div class="segmented" id="p-tabs">
+            <button data-filter="all" class="on">All <span id="tab-all">0</span></button>
+            <button data-filter="in">Present <span id="tab-in">0</span></button>
+            <button data-filter="out">Not yet <span id="tab-out">0</span></button>
+          </div>
+          <input id="p-search" class="pill pill-input" placeholder="Search name or email" autocomplete="off">
+        </div>
+
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Name</th><th>Email</th><th>Check-in hour</th><th>Check-in day</th><th>QR</th><th>Status</th><th></th></tr></thead>
+            <tbody id="p-rows"></tbody>
+          </table>
+          <div id="p-empty" class="empty hidden">No participants yet. <a href="#import">Import a CSV</a> to get started.</div>
+        </div>
+      </section>
+
+      <!-- ===== Import ===== -->
+      <section class="page" id="page-import">
+        <h1>Import CSV</h1>
+        <div class="import-box">
+          <label class="drop" id="drop">
+            <input type="file" id="csv-file" accept=".csv,text/csv" hidden>
+            <div class="drop-icon"><svg viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg></div>
+            <div class="drop-title">Choose a CSV file or drag it here</div>
+            <div class="muted small">Needs a <code>name</code> and an <code>email</code> column. People already in the list are skipped.</div>
+          </label>
+          <div id="import-result"></div>
+        </div>
+      </section>
+
+      <!-- ===== Send QR codes ===== -->
+      <section class="page" id="page-email">
+        <div class="page-head">
+          <h1>Send QR Codes</h1>
+          <div id="gmail-status" class="gmail-pill hidden"></div>
+        </div>
+
+        <!-- Connect Gmail (shown until Gmail works) -->
+        <form id="gmail-form" class="connect hidden" autocomplete="off">
+          <div class="connect-text">
+            <div class="connect-icon">✉</div>
+            <div>
+              <h3>Connect Gmail to send emails</h3>
+              <p class="muted small">You need a Gmail <b>App Password</b> (not your normal password).
+                <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">Create one here ↗</a>
+                (2-Step Verification must be on). It's checked with Google, then saved on this laptop only.</p>
+            </div>
+          </div>
+          <div class="connect-fields">
+            <input class="input" name="gmailUser" type="email" placeholder="you@gmail.com" required>
+            <input class="input mono" name="appPassword" type="password" placeholder="App password (16 letters)" required>
+            <input class="input" name="fromName" placeholder="Sender name (optional)">
+            <button class="btn" id="gmail-connect">Connect</button>
+          </div>
+          <p class="form-error" id="gmail-error"></p>
+        </form>
+
+        <div class="compose-grid" id="compose-area">
+          <!-- Composer -->
+          <div class="composer">
+            <div class="c-row">
+              <span class="c-label">To</span>
+              <div class="segmented small" id="to-mode">
+                <button data-mode="unsent" class="on">Not sent yet <span id="cnt-unsent">0</span></button>
+                <button data-mode="all">Everyone <span id="cnt-all">0</span></button>
+              </div>
+              <span class="c-links"><button type="button" id="show-cc">Cc</button><button type="button" id="show-bcc">Bcc</button></span>
+            </div>
+            <div class="c-row hidden" id="row-cc">
+              <span class="c-label">Cc</span>
+              <div class="chips-input" id="cc-input"><input placeholder="Add email, press Enter"></div>
+            </div>
+            <div class="c-row hidden" id="row-bcc">
+              <span class="c-label">Bcc</span>
+              <div class="chips-input" id="bcc-input"><input placeholder="Add email, press Enter"></div>
+            </div>
+            <p class="c-note hidden" id="cc-note">Cc/Bcc addresses get a copy of <b>every</b> email.</p>
+            <div class="c-row">
+              <span class="c-label">Subject</span>
+              <input id="em-subject" class="c-input" placeholder="Your ticket for {{name}}" autocomplete="off">
+            </div>
+            <textarea id="em-body" class="c-body" rows="9" placeholder="Hi {{name}},&#10;&#10;Thank you for registering! Please show the QR code below at the entrance."></textarea>
+            <div class="c-insert">
+              <span class="muted small">Insert</span>
+              <button type="button" class="chip" data-ph="{{name}}">name</button>
+              <button type="button" class="chip" data-ph="{{email}}">email</button>
+              <button type="button" class="chip" data-ph="{{id}}">ID</button>
+            </div>
+            <div class="c-attach">
+              <div class="qr-thumb"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h8v8H3zm2 2v4h4V5zm8-2h8v8h-8zm2 2v4h4V5zM3 13h8v8H3zm2 2v4h4v-4zm8-2h3v3h-3zm5 0h3v3h-3zm-5 5h3v3h-3zm5 0h3v3h-3z"/></svg></div>
+              <div><b>Personal QR code</b><div class="muted small">Added under your message for each person, and attached as a PNG.</div></div>
+            </div>
+            <div class="c-foot">
+              <button class="btn btn-light" id="btn-test">Send test to me</button>
+              <div class="c-foot-right">
+                <span class="muted small" id="send-hint"></span>
+                <button class="btn btn-send" id="btn-send" disabled>Send</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Preview / recipients -->
+          <div class="side-panel">
+            <div class="tabs">
+              <button data-tab="preview" class="on">Preview</button>
+              <button data-tab="recipients">Recipients <span class="count" id="cnt-rcpt">0</span></button>
+            </div>
+
+            <div id="tab-preview">
+              <div class="pv-nav">
+                <button class="icon-btn" id="pv-prev" aria-label="Previous">‹</button>
+                <div class="pv-who"><b id="pv-name">—</b><span class="muted small" id="pv-counter"></span></div>
+                <button class="icon-btn" id="pv-next" aria-label="Next">›</button>
+              </div>
+              <div class="mail">
+                <div class="mail-head">
+                  <div class="mail-subject" id="pv-subject">Write a subject and message to see the preview</div>
+                  <div class="mail-line"><span>To</span><span id="pv-to">—</span></div>
+                  <div class="mail-line hidden" id="pv-cc-line"><span>Cc</span><span id="pv-cc"></span></div>
+                  <div class="mail-line hidden" id="pv-bcc-line"><span>Bcc</span><span id="pv-bcc"></span></div>
+                </div>
+                <iframe id="pv-frame" class="pv-frame" title="Email preview" sandbox=""></iframe>
+              </div>
+            </div>
+
+            <div id="tab-recipients" class="hidden">
+              <ul class="rcpt" id="rcpt-list"></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sending progress (replaces the composer while sending) -->
+        <div id="progress" class="progress hidden">
+          <div class="pg-top">
+            <div>
+              <div class="muted small" id="pg-kicker">Sending</div>
+              <h2 id="pg-title">Sending…</h2>
+              <div class="muted small" id="pg-sub"></div>
+            </div>
+            <div class="pg-actions">
+              <button class="btn btn-light" id="pg-stop">Stop</button>
+              <button class="btn btn-light hidden" id="pg-back">Back to compose</button>
+              <button class="btn hidden" id="pg-retry">Retry</button>
+            </div>
+          </div>
+          <div class="bar"><div class="bar-sent" id="pg-bar-sent"></div><div class="bar-failed" id="pg-bar-failed"></div></div>
+          <div class="pg-stats">
+            <div><span class="dot dot-green"></span><b id="pg-sent">0</b><span>Sent</span></div>
+            <div><span class="dot dot-red"></span><b id="pg-failed">0</b><span>Failed</span></div>
+            <div><span class="dot dot-gray"></span><b id="pg-left">0</b><span>Left</span></div>
+          </div>
+          <div id="pg-abort" class="notice notice-red hidden"></div>
+          <div id="pg-failures"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ============ Full-screen scanner ============ -->
+<div id="scanner" class="scanner hidden" aria-label="QR scanner">
+  <div id="reader" class="reader"></div>
+  <div class="scan-frame" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+
+  <button class="scan-back" id="scan-back" aria-label="Back">
+    <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+  </button>
+  <div class="scan-top">
+    <span class="scan-count"><span class="dot dot-green"></span><b id="scan-present">0</b> / <span id="scan-total">0</span> present</span>
+  </div>
+  <button class="scan-cam hidden" id="scan-switch" aria-label="Switch camera">
+    <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4zM9 13a3 3 0 0 0 5.2 2M15 12a3 3 0 0 0-5.2-2"/></svg>
+  </button>
+
+  <div class="scan-message hidden" id="scan-message"></div>
+
+  <div class="scan-bottom">
+    <div class="scan-hint">Hold the QR code in front of the camera</div>
+    <form class="scan-manual" id="manual-form">
+      <input id="manual-code" placeholder="or type the ID" autocomplete="off" spellcheck="false">
+    </form>
+  </div>
+
+  <div id="scan-result" class="scan-result"></div>
+</div>
+
+<!-- Confirm dialog -->
+<dialog id="confirm" class="dialog">
+  <form method="dialog">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <div id="confirm-text" class="muted"></div>
+    <input id="confirm-input" class="input hidden" autocomplete="off">
+    <div class="actions right">
+      <button class="btn btn-light" value="cancel">Cancel</button>
+      <button class="btn" id="confirm-ok" value="ok">Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- QR code dialog -->
+<dialog id="qr-dialog" class="dialog qr-dialog">
+  <form method="dialog">
+    <button class="dialog-x" value="close" aria-label="Close">×</button>
+    <img id="qr-img" alt="QR code" width="260" height="260">
+    <div class="qr-name" id="qr-name"></div>
+    <div class="muted small" id="qr-meta"></div>
+    <a class="btn btn-light" id="qr-download" download>Download PNG</a>
+  </form>
+</dialog>
+
+<!-- Add participant dialog -->
+<dialog id="add-dialog" class="dialog">
+  <form id="add-form">
+    <h3>Add participant</h3>
+    <label class="field-label" for="add-name">Name</label>
+    <input class="input" id="add-name" name="name" required maxlength="200">
+    <label class="field-label" for="add-email">Email</label>
+    <input class="input" id="add-email" name="email" type="email" required maxlength="254">
+    <div class="actions right">
+      <button class="btn btn-light" type="button" id="add-cancel">Cancel</button>
+      <button class="btn">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast"></div>
+
+<script src="/vendor/html5-qrcode.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "event-qr-checkin",
+  "version": "1.0.0",
+  "description": "Import participants, email them QR codes, and check them in at the door by scanning.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "csv-parse": "^7.0.3",
+    "dotenv": "^18.0.9",
+    "express": "^4.22.3",
+    "html5-qrcode": "^2.3.8",
+    "nodemailer": "^10.3.1",
+    "qrcode": "^1.5.4"
+  }
+}
