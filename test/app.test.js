@@ -116,22 +116,65 @@ test('export of all participants downloads as CSV', async () => {
   const text = await res.text();
   const lines = text.trim().split('\r\n');
   assert.equal(lines.length, 4); // header + 3 people
-  assert.match(lines[0], /^﻿?id,name,email,Organization,checked_in/);
+  assert.match(lines[0], /^﻿?Name,Email,Check-ins,Last check-in,Today/);
   assert.ok(text.includes('"Chan, Sophea"'), 'commas inside names must be quoted');
   assert.ok(text.includes('សុខ ដារ៉ា'), 'Khmer names must survive');
 });
 
-test('export of checked-in participants only includes checked-in people', async () => {
-  const res = await get('/api/export/checked-in.csv');
+test('present participants export only includes people who checked in', async () => {
+  const res = await get('/api/export/present.csv');
   assert.equal(res.status, 200);
-  assert.match(res.headers.get('content-disposition'), /participants-checked-in-.*\.csv/);
+  assert.match(res.headers.get('content-disposition'), /participants-present-.*\.csv/);
   const lines = (await res.text()).trim().split('\r\n');
   assert.equal(lines.length, 2); // header + 1 person
-  assert.match(lines[1], /,yes,/);
+  assert.match(lines[0], /^﻿?Name,Email,Check-ins,Last check-in,Today,"\w{3}, \w{3} \d+, \d{4}"/);
+  assert.match(lines[1], /,Present,"?\d{1,2}:\d{2} (AM|PM)/);
+});
+
+test('attendance log export has one row per check-in', async () => {
+  const res = await get('/api/export/attendance.csv');
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-disposition'), /attendance-log-.*\.csv/);
+  const lines = (await res.text()).trim().split('\r\n');
+  assert.equal(lines.length, 2); // header + 1 check-in
+  assert.match(lines[0], /date,weekday,time,check_in_number_that_day,id,name,email/);
+  assert.match(lines[1], /^\d{4}-\d{2}-\d{2},\w+day,\d{1,2}:\d{2} (AM|PM),1,/);
+});
+
+test('the same person can check in again later, and on other days', async () => {
+  const store = require('../lib/store');
+  const added = await (await post('/api/participants', { name: 'Multi Day', email: 'multi@example.com' })).json();
+  const rec = store.findById(added.id);
+  const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  const twoMinAgo = new Date(Date.now() - 120 * 1000).toISOString();
+  rec.checkins.push(yesterday, twoMinAgo); // attended yesterday, and once today already
+  const r = await (await post('/api/checkin', { code: added.id })).json();
+  assert.equal(r.status, 'checked_in', 'a later scan counts as a new check-in');
+  assert.equal(r.participant.checkins.length, 3);
+  assert.equal(r.participant.days_attended, new Date(yesterday).getDate() === new Date().getDate() ? 1 : 2);
+  // Remove one check-in by its time
+  const del = await fetch(`${base}/api/participants/${added.id}/checkins`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ at: yesterday }),
+  });
+  assert.equal(del.status, 200);
+  assert.equal((await del.json()).checkins.length, 2);
+  const stats = await (await get('/api/stats')).json();
+  assert.ok(Array.isArray(stats.days) && stats.days.length >= 1);
+  assert.ok(stats.recent[0].name);
+  await fetch(`${base}/api/participants/${added.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+});
+
+test('old data files with one check-in are upgraded', () => {
+  const store = require('../lib/store');
+  const old = { id: 'AAAAAAAAAA', name: 'Old', email: 'o@x.com', checked_in: true, checked_in_at: '2025-01-01T09:00:00.000Z' };
+  const p = store.upgrade({ ...old });
+  assert.deepEqual(p.checkins, [old.checked_in_at]);
+  assert.equal(p.checked_in, undefined);
+  assert.deepEqual(store.upgrade({ id: 'B', checked_in: false, checked_in_at: null }).checkins, []);
 });
 
 test('email preview shows the right person with placeholders filled in', async () => {
-  const res = await post('/api/email/preview', { subject: 'Ticket for {{name}}', body: 'Hi {{name}} ({{email}}) from {{organization}}', index: 1 });
+  const res = await post('/api/email/preview', { subject: 'Ticket for {{name}}', body: 'Hi {{name}} ({{email}}) from {{organization}}\n{{qr}}', index: 1 });
   const data = await res.json();
   assert.equal(res.status, 200);
   assert.equal(data.total, 3);
@@ -285,4 +328,58 @@ test('.env writer updates keys and keeps other lines', () => {
   const text = fs.readFileSync(file, 'utf8');
   assert.equal(text, '# comment\nPORT=3000\nGMAIL_USER=new@gmail.com\nFROM_NAME="Open Data Team"\n');
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});
+
+test('one participant can be deleted on their own', async () => {
+  const a = await (await post('/api/participants', { name: 'Keep Me', email: 'keep@example.com' })).json();
+  const b = await (await post('/api/participants', { name: 'Delete Me', email: 'deleteme@example.com' })).json();
+  const res = await fetch(`${base}/api/participants/${b.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(res.status, 200);
+  const ids = (await (await get('/api/participants')).json()).map((p) => p.id);
+  assert.ok(ids.includes(a.id));
+  assert.ok(!ids.includes(b.id));
+  const again = await fetch(`${base}/api/participants/${b.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(again.status, 404);
+});
+
+test('{{qr}} puts the QR code where it is typed; without it there is no QR image in the message', async () => {
+  const mailer = require('../lib/mailer');
+  const p = { id: 'ABCDEF1234', name: 'Q', email: 'q@example.com' };
+  const middle = await mailer.buildEmail(p, 'Hi', 'Top text\n{{qr}}\nBottom text');
+  assert.ok(middle.html.indexOf('Top text') < middle.html.indexOf('<img'));
+  assert.ok(middle.html.indexOf('<img') < middle.html.indexOf('Bottom text'));
+  assert.ok(!middle.html.includes('{{qr}}'));
+  assert.match(middle.text, /Top text\n\[Your QR code is attached/);
+  const none = await mailer.buildEmail(p, 'Hi', 'Only text');
+  assert.ok(!none.html.includes('<img'));
+  assert.equal(none.attachments.length, 2, 'QR is still attached as a file');
+});
+
+test('preview and send skip removed people and use per-person edits', async () => {
+  const list = await (await get('/api/participants')).json();
+  assert.ok(list.length >= 2);
+  const [first, second] = list;
+  const body = {
+    subject: 'Main', body: 'Main text', onlyUnsent: false,
+    exclude: [first.id],
+    overrides: { [second.id]: { subject: 'Just for you', body: 'Special {{qr}} text' } },
+  };
+  const r = await (await post('/api/email/preview', { ...body, index: 0 })).json();
+  assert.equal(r.participant.id, second.id, 'removed person is skipped');
+  assert.equal(r.total, list.length - 1);
+  assert.equal(r.subject, 'Just for you');
+  assert.equal(r.edited, true);
+  assert.match(r.html, /Special/);
+
+  const bad = await post('/api/email/preview', { ...body, overrides: { [second.id]: { subject: '', body: 'x' } } });
+  assert.equal(bad.status, 400);
+
+  const mailer = require('../lib/mailer');
+  const seen = [];
+  mailer._setTransporter({ sendMail: async (msg) => seen.push(msg) });
+  const people = [{ id: 'A1', name: 'One', email: 'one@example.com' }, { id: 'B2', name: 'Two', email: 'two@example.com' }];
+  mailer.startJob(people, 'Main', 'Main text', { save() {} }, { overrides: { B2: { subject: 'Custom', body: 'Custom text' } } });
+  while (mailer.job.running) await new Promise((res) => setTimeout(res, 5));
+  assert.equal(seen[0].subject, 'Main');
+  assert.equal(seen[1].subject, 'Custom');
 });

@@ -18,7 +18,7 @@ const store = require('./lib/store');
 const mailer = require('./lib/mailer');
 const security = require('./lib/security');
 const { audit } = require('./lib/audit');
-const { parseParticipantsCsv, participantsToCsv, EMAIL_RE } = require('./lib/csv');
+const { parseParticipantsCsv, participantsToCsv, attendanceToCsv, EMAIL_RE } = require('./lib/csv');
 const { setEnvValues } = require('./lib/envfile');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -96,7 +96,7 @@ app.get('/api/participants', (req, res) => {
         p.id.toLowerCase().includes(q)
     );
   }
-  res.json(list);
+  res.json(list.map(store.view));
 });
 
 app.post('/api/participants/import', (req, res) => {
@@ -138,7 +138,7 @@ app.post('/api/participants', (req, res) => {
   const p = store.add({ name, email });
   store.save();
   audit(req, 'add_participant', { id: p.id });
-  res.status(201).json(p);
+  res.status(201).json(store.view(p));
 });
 
 // Deleting everything needs "DELETE" typed in the confirm box, not just a click.
@@ -151,6 +151,15 @@ app.delete('/api/participants', (req, res) => {
   res.json({ ok: true });
 });
 
+// Delete one participant (their QR code stops working).
+app.delete('/api/participants/:id', (req, res) => {
+  if (mailer.job.running) return fail(res, 409, 'Emails are being sent right now. Wait or stop the send first.');
+  const p = store.remove(req.params.id);
+  if (!p) return fail(res, 404, 'Participant not found.');
+  audit(req, 'delete_participant', { id: p.id });
+  res.json({ ok: true, id: p.id, name: p.name });
+});
+
 // A participant's QR code as a PNG image (open it, print it, or show it on a phone).
 app.get('/api/participants/:id/qr.png', wrap(async (req, res) => {
   const p = store.findById(req.params.id);
@@ -160,8 +169,12 @@ app.get('/api/participants/:id/qr.png', wrap(async (req, res) => {
 
 // ---------------- Function 2: Check-in ----------------
 
+// Scanning the same person again within this time counts as the same check-in
+// (cameras often read a code twice). After that, every scan is a new check-in.
+const COOLDOWN_MS = Number(process.env.CHECKIN_COOLDOWN_SECONDS ?? 60) * 1000;
+
 // Body: { code: "<text read from the QR code>" }
-// Result status is one of: "checked_in", "already_checked_in", "not_found".
+// Result status is one of: "checked_in", "already_checked_in" (scanned moments ago), "not_found".
 app.post('/api/checkin', (req, res) => {
   const code = field(req.body, 'code');
   if (!code) return fail(res, 400, 'No code received.');
@@ -170,49 +183,62 @@ app.post('/api/checkin', (req, res) => {
   const p = store.findById(code);
   if (!p) return res.status(404).json({ status: 'not_found', code });
 
-  if (p.checked_in) {
-    return res.json({ status: 'already_checked_in', participant: p });
+  const last = p.checkins[p.checkins.length - 1];
+  const ago = last ? Date.now() - new Date(last).getTime() : Infinity;
+  if (ago < COOLDOWN_MS) {
+    return res.json({ status: 'already_checked_in', participant: store.view(p), secondsAgo: Math.round(ago / 1000), cooldownSeconds: COOLDOWN_MS / 1000 });
   }
-  p.checked_in = true;
-  p.checked_in_at = new Date().toISOString();
+  p.checkins.push(new Date().toISOString());
   store.save();
-  res.json({ status: 'checked_in', participant: p });
+  const v = store.view(p);
+  res.json({ status: 'checked_in', participant: v, numberToday: v.checkins_today });
 });
 
-// Undo a check-in (in case someone was scanned by mistake).
-app.post('/api/participants/:id/undo-checkin', (req, res) => {
+// Remove one check-in (scanned by mistake). Body: { at: "<time of that check-in>" }. Without `at`, removes the latest.
+function removeCheckin(req, res) {
   const p = store.findById(req.params.id);
   if (!p) return fail(res, 404, 'Participant not found.');
-  p.checked_in = false;
-  p.checked_in_at = null;
+  const at = field(req.body, 'at');
+  const i = at ? p.checkins.indexOf(at) : p.checkins.length - 1;
+  if (i < 0) return fail(res, 404, 'That check-in was not found.');
+  p.checkins.splice(i, 1);
   store.save();
   audit(req, 'undo_checkin', { id: p.id });
-  res.json(p);
-});
+  res.json(store.view(p));
+}
+app.post('/api/participants/:id/undo-checkin', removeCheckin);
+app.delete('/api/participants/:id/checkins', removeCheckin);
 
 // ---------------- Function 3: Exports ----------------
 
-function sendCsv(res, filename, list) {
+function sendCsv(res, filename, text) {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(participantsToCsv(list));
+  res.send(text);
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
 
 app.get('/api/export/all.csv', (req, res) => {
   audit(req, 'export_all', { count: store.all().length });
-  sendCsv(res, `participants-all-${today()}.csv`, store.all());
+  sendCsv(res, `participants-all-${today()}.csv`, participantsToCsv(store.all().map(store.view), store.dayKey));
 });
 
-app.get('/api/export/checked-in.csv', (req, res) => {
-  const list = store
-    .all()
-    .filter((p) => p.checked_in)
-    .sort((a, b) => a.checked_in_at.localeCompare(b.checked_in_at)); // in arrival order
-  audit(req, 'export_checked_in', { count: list.length });
-  sendCsv(res, `participants-checked-in-${today()}.csv`, list);
-});
+// Every check-in (one row per scan), in time order.
+function sendAttendance(req, res) {
+  audit(req, 'export_attendance');
+  sendCsv(res, `attendance-log-${today()}.csv`, attendanceToCsv(store.all(), store.dayKey));
+}
+app.get('/api/export/attendance.csv', sendAttendance);
+
+// Only people who have checked in at least once (same columns as "all participants").
+function sendPresent(req, res) {
+  const list = store.all().filter((p) => p.checkins.length).map(store.view);
+  audit(req, 'export_present', { count: list.length });
+  sendCsv(res, `participants-present-${today()}.csv`, participantsToCsv(list, store.dayKey));
+}
+app.get('/api/export/present.csv', sendPresent);
+app.get('/api/export/checked-in.csv', sendPresent); // old address
 
 // ---------------- Function 4: Email QR codes ----------------
 
@@ -253,7 +279,25 @@ function addressList(value, label) {
   return { list };
 }
 
-/** Check subject, body, Cc and Bcc. Returns { error } or { subject, body, cc, bcc }. */
+/**
+ * People taken out of this send, and people whose email was edited just for them.
+ * exclude: ["ID", ...]   overrides: { "ID": { subject, body } }
+ */
+function readPersonal(body) {
+  const exclude = Array.isArray(body.exclude) ? body.exclude.map((x) => String(x).toUpperCase()).slice(0, LIMITS.rows) : [];
+  const overrides = {};
+  const raw = body.overrides && typeof body.overrides === 'object' && !Array.isArray(body.overrides) ? body.overrides : {};
+  for (const [id, o] of Object.entries(raw).slice(0, 500)) {
+    const p = store.findById(id);
+    if (!p || !o || typeof o !== 'object') continue;
+    const err = checkDraft(o);
+    if (err) return { error: `Edited email for ${p.name}: ${err}` };
+    overrides[p.id] = { subject: field(o, 'subject'), body: field(o, 'body') };
+  }
+  return { exclude: new Set(exclude), overrides };
+}
+
+/** Check subject, body, Cc and Bcc. Returns { error } or { subject, body, cc, bcc, exclude, overrides }. */
 function readDraft(body) {
   const err = checkDraft(body);
   if (err) return { error: err };
@@ -261,13 +305,18 @@ function readDraft(body) {
   if (cc.error) return cc;
   const bcc = addressList(body.bcc, 'Bcc');
   if (bcc.error) return bcc;
-  return { subject: field(body, 'subject'), body: field(body, 'body'), cc: cc.list, bcc: bcc.list };
+  const personal = readPersonal(body);
+  if (personal.error) return personal;
+  return { subject: field(body, 'subject'), body: field(body, 'body'), cc: cc.list, bcc: bcc.list, ...personal };
 }
 
-/** Who would receive the email, depending on the "only not sent yet" option. */
-function recipients(onlyUnsent) {
-  return onlyUnsent === true ? store.all().filter((p) => !p.qr_sent) : store.all();
+/** Who would receive the email: optionally only those not sent yet, minus anyone removed from this send. */
+function recipients(onlyUnsent, exclude = new Set()) {
+  return store.all().filter((p) => !(onlyUnsent === true && p.qr_sent) && !exclude.has(p.id));
 }
+
+/** The subject and text for one person (their own edited version, or the main one). */
+const textFor = (draft, p) => draft.overrides[p.id] || draft;
 
 /** Check subject/body are filled in and not too long. Returns an error message or null. */
 function checkDraft(body) {
@@ -284,13 +333,14 @@ function checkDraft(body) {
 app.post('/api/email/preview', wrap(async (req, res) => {
   const draft = readDraft(req.body);
   if (draft.error) return fail(res, 400, draft.error);
-  const list = recipients(req.body.onlyUnsent);
+  const list = recipients(req.body.onlyUnsent, draft.exclude);
   if (list.length === 0) {
-    return fail(res, 400, req.body.onlyUnsent ? 'Everyone has already received their QR code.' : 'No participants yet. Import a CSV first.');
+    return fail(res, 400, draft.exclude.size ? 'Everyone was removed from this send.' : req.body.onlyUnsent ? 'Everyone has already received their QR code.' : 'No participants yet. Import a CSV first.');
   }
   const index = Math.min(Math.max(Number(req.body.index) || 0, 0), list.length - 1);
   const p = list[index];
-  const email = await mailer.buildEmail(p, draft.subject, draft.body, draft);
+  const t = textFor(draft, p);
+  const email = await mailer.buildEmail(p, t.subject, t.body, draft);
   res.json({
     index,
     total: list.length,
@@ -299,6 +349,7 @@ app.post('/api/email/preview', wrap(async (req, res) => {
     cc: draft.cc,
     bcc: draft.bcc,
     subject: email.subject,
+    edited: Boolean(draft.overrides[p.id]),
     html: email.previewHtml,
   });
 }));
@@ -306,13 +357,14 @@ app.post('/api/email/preview', wrap(async (req, res) => {
 // Send the email for participant #index to my own Gmail address.
 app.post('/api/email/test', wrap(async (req, res) => {
   if (!mailer.isConfigured()) return fail(res, 400, 'Connect Gmail first.');
-  const err = checkDraft(req.body);
-  if (err) return fail(res, 400, err);
-  const list = recipients(req.body.onlyUnsent);
+  const draft = readDraft(req.body);
+  if (draft.error) return fail(res, 400, draft.error);
+  const list = recipients(req.body.onlyUnsent, draft.exclude);
   const p = list[Math.min(Math.max(Number(req.body.index) || 0, 0), list.length - 1)];
   if (!p) return fail(res, 400, 'No participants to use for the test. Import a CSV first.');
   try {
-    const email = await mailer.buildEmail(p, field(req.body, 'subject'), field(req.body, 'body'));
+    const t = textFor(draft, p);
+    const email = await mailer.buildEmail(p, t.subject, t.body);
     email.subject = `[TEST] ${email.subject}`;
     await mailer.send(email, process.env.GMAIL_USER);
     audit(req, 'email_test');
@@ -328,10 +380,10 @@ app.post('/api/email/send', (req, res) => {
   const draft = readDraft(req.body);
   if (draft.error) return fail(res, 400, draft.error);
   if (mailer.job.running) return fail(res, 409, 'A send is already in progress.');
-  const list = recipients(req.body.onlyUnsent);
+  const list = recipients(req.body.onlyUnsent, draft.exclude);
   if (list.length === 0) return fail(res, 400, 'Nobody to send to.');
   const onlyUnsent = req.body.onlyUnsent === true;
-  mailer.startJob(list, draft.subject, draft.body, store, { cc: draft.cc, bcc: draft.bcc, onlyUnsent });
+  mailer.startJob(list, draft.subject, draft.body, store, { cc: draft.cc, bcc: draft.bcc, onlyUnsent, overrides: draft.overrides });
   audit(req, 'email_send_all', { total: list.length, onlyUnsent, cc: draft.cc.length, bcc: draft.bcc.length });
   res.json({ started: true, total: list.length });
 });

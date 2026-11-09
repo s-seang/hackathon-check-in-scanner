@@ -5,7 +5,7 @@ A small web app for running check-in at an event:
 1. **Import** your participant list from a CSV file.
 2. **Email** every participant their own QR code (through Gmail).
 3. **Scan** QR codes at the door with the laptop camera (or a USB scanner) to check people in.
-4. **Export** the full list or only the people who checked in, as CSV.
+4. **Export** the full list, or an attendance log with every check-in by day and time, as CSV.
 
 Everything runs on your own laptop. Participant data is saved in `data/participants.json`.
 There is no login. By default only the laptop running the app can open it. See **[SECURITY.md](SECURITY.md)**.
@@ -87,15 +87,18 @@ You can leave the page while sending; it continues on the server. Come back to s
 ### Check-in (at the door)
 1. Click **Check-in Scanner**. The camera opens full screen (allow camera access the first time).
 2. Hold up a QR code. A pop-up shows the person's name:
-   - **green** "Welcome" → checked in
-   - **amber** "Already checked in" → this code was used before (with the time)
+   - **green** "Welcome" → checked in ("Welcome back · Check-in #2 today" for later scans)
+   - **amber** "Already scanned" → the same code was scanned less than a minute ago, so it is not counted twice
    - **red** "Not found" → this code is not in the list
 3. No camera? Type the ID at the bottom, or plug in a USB QR scanner (it types the code automatically).
 4. Press the **←** arrow (top-left) or `Esc` to leave the scanner.
-5. To fix a mistake: **Participants** → **Undo**. Walk-ins: **Participants** → **+ Add**, then **Mark present** or click the QR icon to show their code.
+5. People can check in many times, on many days (e.g. morning and afternoon sessions). Every scan is saved with its date and time.
+   Change the 1-minute repeat protection with `CHECKIN_COOLDOWN_SECONDS` in `.env`.
+6. To see or fix someone's check-ins: **Participants** → click their **Check-ins** number. It lists every check-in by day, and the trash icon removes one.
+   Walk-ins: **Participants** → **+ Add**, then **Check in** or click the QR icon to show their code.
 
 ### After the event
-On **Participants**, click **Export** → **All participants** or **Present only**. The files open in Excel and Google Sheets.
+On **Participants**, click **Export** → **All participants** (one column per day with every check-in time that day) or **Present Participants** (only people who have checked in, same columns). The files open in Excel and Google Sheets.
 
 ---
 

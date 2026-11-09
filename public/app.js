@@ -136,20 +136,57 @@ const isTyping = () => ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeE
 
 // ---------------- Live stats (refreshed every few seconds) ----------------
 
+const fmtLongDay = (d) => d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+/** "2026-11-25" → a Date at local midnight that day. */
+const fromDayKey = (key) => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d); };
+const localDayKey = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
 async function refreshStats() {
+  let s;
   try {
-    const s = await api('/api/stats');
-    const set = (id, v) => ($(id).textContent = v);
-    set('#side-checked', s.checkedIn); set('#side-sent', s.qrSent); set('#side-total', s.total);
-    set('#top-checked', s.checkedIn); set('#top-total', s.total);
-    set('#home-total', s.total); set('#home-checked', s.checkedIn); set('#home-sent', s.qrSent);
-    set('#home-remaining', `${s.total - s.checkedIn} still to arrive`);
-    set('#home-failed', s.qrFailed ? `${s.qrFailed} failed` : `${s.total - s.qrSent} not sent yet`);
-    set('#home-pct', s.total ? `${Math.round((s.checkedIn / s.total) * 100)}% arrived` : '0%');
-    set('#scan-present', s.checkedIn); set('#scan-total', s.total);
+    s = await api('/api/stats');
   } catch {
-    /* server briefly unreachable — try again next tick */
+    return; // server briefly unreachable — try again next tick
   }
+  const set = (id, v) => ($(id).textContent = v);
+  const pct = s.total ? Math.round((s.checkedIn / s.total) * 100) : 0;
+  set('#side-checked', s.checkedIn); set('#side-sent', s.qrSent); set('#side-total', s.total);
+  set('#top-checked', s.checkedIn); set('#top-total', s.total);
+  set('#scan-present', s.checkedIn); set('#scan-total', s.total);
+
+  // Home
+  set('#home-date', fmtLongDay(fromDayKey(s.today)));
+  set('#home-checked', s.checkedIn); set('#home-total', s.total); set('#home-total2', s.total);
+  set('#home-pct', `${pct}%`);
+  set('#home-remaining', s.total ? `${s.total - s.checkedIn} still to arrive` : 'Import participants to start');
+  set('#home-scans', s.checkinsToday);
+  set('#home-sent', s.qrSent);
+  set('#home-failed', s.qrFailed ? `${s.qrFailed} failed` : `${s.total - s.qrSent} not sent yet`);
+  const ring = $('#home-ring');
+  const len = 2 * Math.PI * 52;
+  ring.style.strokeDasharray = `${len}`;
+  ring.style.strokeDashoffset = `${len * (1 - pct / 100)}`;
+
+  $('#home-days').innerHTML = s.days.length
+    ? s.days
+        .map((d) => {
+          const w = s.total ? Math.min(100, (d.people / s.total) * 100) : 0;
+          const date = fromDayKey(d.day);
+          return `<div class="day-row${d.day === s.today ? ' is-today' : ''}">
+            <div class="day-date"><b>${date.toLocaleDateString([], { weekday: 'short' })}</b><span>${date.toLocaleDateString([], { day: 'numeric', month: 'short' })}</span></div>
+            <div class="day-bar"><i style="width:${w}%"></i></div>
+            <div class="day-num"><b>${d.people}</b> ${d.people === 1 ? 'person' : 'people'}<span>${plural(d.checkins, 'check-in')}</span></div>
+          </div>`;
+        })
+        .join('')
+    : '<div class="panel-empty">No check-ins yet. Open the scanner to start.</div>';
+
+  $('#home-recent').innerHTML = s.recent.length
+    ? s.recent
+        .map((r) => `<li><span class="avatar">${escapeHtml(r.name.trim().charAt(0).toUpperCase())}</span>
+          <b>${escapeHtml(r.name)}</b><span class="when">${fmtHour(r.at)}${localDayKey(r.at) === s.today ? '' : ` · ${fmtDay(r.at)}`}</span></li>`)
+        .join('')
+    : '<li class="panel-empty">Nobody has checked in yet.</li>';
 }
 
 // ---------------- Function 2: Full-screen scanner ----------------
@@ -278,11 +315,13 @@ async function checkIn(code) {
     const r = await api('/api/checkin', { method: 'POST', body: { code } });
     const p = r.participant;
     if (r.status === 'checked_in') {
-      showResult('ok', '✓', 'Welcome', p.name, `Checked in at ${fmtHour(p.checked_in_at)}`);
+      const n = r.numberToday;
+      showResult('ok', '✓', n === 1 ? 'Welcome' : 'Welcome back', p.name,
+        `Check-in #${n} today · ${fmtHour(p.checked_in_at)}${p.days_attended > 1 ? ` · day ${p.days_attended}` : ''}`);
       beep('ok');
     } else if (r.status === 'already_checked_in') {
-      const mins = Math.max(0, Math.round((Date.now() - new Date(p.checked_in_at)) / 60000));
-      showResult('warn', '!', 'Already checked in', p.name, `at ${fmtHour(p.checked_in_at)} · ${mins} min ago`);
+      showResult('warn', '!', 'Already scanned', p.name,
+        `${r.secondsAgo} sec ago · scan again after ${Math.round(r.cooldownSeconds / 60) || 1} min for a new check-in`);
       beep('warn');
     } else {
       showResult('bad', '✕', 'Not found', 'Unknown QR code', 'This code is not on the participant list');
@@ -365,17 +404,22 @@ function renderParticipants() {
   $('#p-empty').classList.toggle('hidden', participants.length > 0);
   $('#p-rows').innerHTML = list
     .map((p) => {
-      const time = (v) => (v ? `<td class="time">${v}</td>` : '<td class="time dim">—</td>');
+      const id = escapeHtml(p.id);
+      const total = p.checkins.length;
+      const checkins = total
+        ? `<button class="ci-btn" data-history="${id}" title="See every check-in">
+             <span class="ci-count${p.checkins_today ? ' on' : ''}">${p.checkins_today}</span>
+             <span class="ci-text"><b>today</b><span>${total} total · ${plural(p.days_attended, 'day')}</span></span>
+           </button>`
+        : `<button class="ci-btn ci-none" data-history="${id}"><span class="ci-text"><span>None yet</span></span></button>`;
       return `<tr>
         <td class="name">${escapeHtml(p.name)}</td>
         <td>${escapeHtml(p.email)}</td>
-        ${time(fmtHour(p.checked_in_at))}
-        ${time(fmtDay(p.checked_in_at))}
+        <td>${checkins}</td>
+        ${p.checked_in_at ? `<td class="time last"><b>${fmtHour(p.checked_in_at)}</b><span>${p.checked_in ? 'Today' : fmtDay(p.checked_in_at)}</span></td>` : '<td class="time dim">—</td>'}
         <td><button class="qr-btn" data-qr="${escapeHtml(p.id)}" title="Show QR code">${QR_ICON}</button></td>
         <td>${p.checked_in ? '<span class="status status-present">Present</span>' : '<span class="status status-absent">Not yet</span>'}</td>
-        <td class="end">${p.checked_in
-          ? `<button class="link-btn" data-undo="${escapeHtml(p.id)}">Undo</button>`
-          : `<button class="mark-btn" data-checkin="${escapeHtml(p.id)}">Mark present</button>`}</td>
+        <td class="end"><button class="mark-btn" data-checkin="${id}" title="Add a check-in now">Check in</button><button class="trash-btn" data-del="${escapeHtml(p.id)}" title="Delete ${escapeHtml(p.name)}" aria-label="Delete ${escapeHtml(p.name)}"></button></td>
       </tr>`;
     })
     .join('');
@@ -395,20 +439,95 @@ $('#p-rows').addEventListener('click', async (e) => {
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.qr) return openQr(b.dataset.qr);
+  if (b.dataset.del) return deleteOne(b.dataset.del);
+  if (b.dataset.history) return openHistory(b.dataset.history);
+  if (b.dataset.checkin) manualCheckin(b.dataset.checkin);
+});
+
+/** Add a check-in by hand (button in the table or in the history window). */
+async function manualCheckin(id) {
   try {
-    if (b.dataset.checkin) {
-      const r = await api('/api/checkin', { method: 'POST', body: { code: b.dataset.checkin } });
-      toast(`${r.participant.name} is present`);
-    } else if (b.dataset.undo) {
-      const p = await api(`/api/participants/${b.dataset.undo}/undo-checkin`, { method: 'POST' });
-      toast(`Check-in undone for ${p.name}`);
-    }
+    const r = await api('/api/checkin', { method: 'POST', body: { code: id } });
+    const p = r.participant;
+    if (r.status === 'checked_in') toast(`${p.name}: check-in #${r.numberToday} today`);
+    else toast(`${p.name} was checked in ${r.secondsAgo} sec ago`, true);
+    await loadParticipants();
+    refreshStats();
+    if ($('#hist-dialog').open) renderHistory(id);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// ---- Attendance history (every check-in of one person, grouped by day) ----
+
+function openHistory(id) {
+  renderHistory(id);
+  $('#hist-dialog').showModal();
+}
+
+function renderHistory(id) {
+  const p = participants.find((x) => x.id === id);
+  if (!p) return $('#hist-dialog').close();
+  const dlg = $('#hist-dialog');
+  dlg.dataset.id = id;
+  $('#hist-name').textContent = p.name;
+  $('#hist-meta').textContent = p.checkins.length
+    ? `${plural(p.checkins.length, 'check-in')} over ${plural(p.days_attended, 'day')} · ID ${p.id}`
+    : `No check-ins yet · ID ${p.id}`;
+  const byDay = new Map();
+  [...p.checkins].sort().forEach((at) => {
+    const k = localDayKey(at);
+    if (!byDay.has(k)) byDay.set(k, []);
+    byDay.get(k).push(at);
+  });
+  const todayKey = localDayKey(new Date().toISOString());
+  $('#hist-body').innerHTML = byDay.size
+    ? [...byDay.entries()]
+        .map(([day, list]) => `<div class="hist-day">
+          <div class="hist-day-title">${fmtLongDay(fromDayKey(day))}${day === todayKey ? ' <span class="tag tag-green">Today</span>' : ''}<span class="muted">${plural(list.length, 'check-in')}</span></div>
+          <ol>${list.map((at, i) => `<li><span class="num">${i + 1}</span><span class="t">${new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <button type="button" class="trash-btn" data-at="${escapeHtml(at)}" title="Remove this check-in" aria-label="Remove this check-in"></button></li>`).join('')}</ol>
+        </div>`)
+        .join('')
+    : '<div class="panel-empty">Not checked in yet. Scan their QR code, or press “Check in now”.</div>';
+}
+
+$('#hist-add').addEventListener('click', () => manualCheckin($('#hist-dialog').dataset.id));
+$('#hist-body').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-at]');
+  if (!b) return;
+  const id = $('#hist-dialog').dataset.id;
+  try {
+    await api(`/api/participants/${encodeURIComponent(id)}/checkins`, { method: 'DELETE', body: { at: b.dataset.at } });
+    toast('Check-in removed');
+    await loadParticipants();
+    refreshStats();
+    renderHistory(id);
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+async function deleteOne(id) {
+  const p = participants.find((x) => x.id === id);
+  if (!p) return;
+  const ok = await confirmDialog({
+    title: `Delete ${p.name}?`,
+    html: `${escapeHtml(p.email)} will be removed from the list. Their QR code will stop working. <b>This cannot be undone.</b>`,
+    okText: 'Delete',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/participants/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} });
+    toast(`Deleted ${p.name}`);
     loadParticipants();
     refreshStats();
   } catch (err) {
     toast(err.message, true);
   }
-});
+}
 
 function openQr(id) {
   const p = participants.find((x) => x.id === id);
@@ -468,7 +587,7 @@ $('#delete-all').addEventListener('click', async () => {
 async function importFile(file) {
   if (!file) return;
   const box = $('#import-result');
-  box.innerHTML = '<p class="muted">Importing…</p>';
+  box.innerHTML = `<div class="import-loading"><span class="spinner"></span>Importing <b>${escapeHtml(file.name)}</b>…</div>`;
   try {
     const csv = await file.text();
     const r = await api('/api/participants/import', { method: 'POST', body: { csv } });
@@ -476,20 +595,41 @@ async function importFile(file) {
       .slice(0, 50)
       .map((s) => `<li>${s.row ? `Row ${s.row}: ` : ''}${escapeHtml(s.reason)}</li>`)
       .join('');
+    $('#drop').classList.add('hidden'); // show the result on its own; the back button brings the upload box back
     box.innerHTML = `<div class="import-summary">
-      <div class="notice notice-green">
-        <b>${r.added} added</b>${r.skipped.length ? ` · ${r.skipped.length} skipped` : ''} · ${r.total} participants in total.
-        <a href="#participants">View list</a>
+      <div class="import-top">
+        <button type="button" class="back-btn" data-import-again title="Back to upload" aria-label="Back to upload"><svg class="ico" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <div class="import-file">✓ <b>${escapeHtml(file.name)}</b> imported</div>
       </div>
-      ${r.skipped.length ? `<b>Skipped rows</b><ul>${skippedList}</ul>${r.skipped.length > 50 ? `<p class="muted small">…and ${r.skipped.length - 50} more</p>` : ''}` : ''}
+      <div class="import-stats">
+        <div class="ist ist-green"><b>${r.added}</b><span>Added</span></div>
+        <div class="ist ${r.skipped.length ? 'ist-amber' : ''}"><b>${r.skipped.length}</b><span>Skipped</span></div>
+        <div class="ist"><b>${r.total}</b><span>Total in list</span></div>
+      </div>
+      <div class="import-next">
+        <button type="button" class="btn btn-light btn-again" data-import-again><svg class="ico" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4"/></svg>Import another file</button>
+        <span class="spacer"></span>
+        <a class="btn btn-light" href="#participants">View participants</a>
+        <a class="btn" href="#email">Send QR codes →</a>
+      </div>
+      ${r.skipped.length ? `<details class="skipped"><summary>Why ${r.skipped.length === 1 ? '1 row was' : `${r.skipped.length} rows were`} skipped</summary><ul>${skippedList}</ul>${r.skipped.length > 50 ? `<p class="muted small">…and ${r.skipped.length - 50} more</p>` : ''}</details>` : ''}
     </div>`;
     refreshStats();
   } catch (err) {
-    box.innerHTML = `<div class="import-summary notice notice-red">${escapeHtml(err.message)}</div>`;
+    box.innerHTML = `<div class="import-summary notice notice-red">${escapeHtml(err.message)} Choose another file above to try again.</div>`;
   } finally {
     $('#csv-file').value = ''; // allow choosing the same file again
   }
 }
+
+/** Back to the empty upload box, ready for another file. */
+function resetImport() {
+  $('#import-result').innerHTML = '';
+  $('#drop').classList.remove('hidden');
+}
+$('#import-result').addEventListener('click', (e) => {
+  if (e.target.closest('[data-import-again]')) resetImport();
+});
 
 $('#csv-file').addEventListener('change', (e) => importFile(e.target.files[0]));
 const drop = $('#drop');
@@ -511,6 +651,9 @@ let previewKey = null; // which draft the preview on screen belongs to
 let pollTimer = null;
 let jobStartedHere = null; // a send started from this page (so we show its result)
 let dismissedJob = null; // a finished send the user closed with "Back to compose"
+let excluded = []; // IDs removed from this send (they stay in the participant list)
+let overrides = {}; // { ID: { subject, body } } — emails edited for one person only
+let previewPerson = null; // the participant shown in the preview right now
 
 /** A small "type an email, press Enter" box that turns addresses into chips. Used for Cc and Bcc. */
 function chipInput(el, onChange) {
@@ -568,10 +711,13 @@ function draft() {
     cc: cc.get(),
     bcc: bcc.get(),
     onlyUnsent: toMode === 'unsent',
+    exclude: excluded.slice(),
+    overrides: { ...overrides },
   };
 }
 const draftKey = () => JSON.stringify(draft());
-const recipients = () => (toMode === 'unsent' ? participants.filter((p) => !p.qr_sent) : participants);
+const recipients = () =>
+  participants.filter((p) => !(toMode === 'unsent' && p.qr_sent) && !excluded.includes(p.id));
 
 function saveDraft() {
   try { localStorage.setItem('emailDraft', JSON.stringify({ ...draft(), toMode })); } catch { /* fine */ }
@@ -579,6 +725,7 @@ function saveDraft() {
 
 function draftChanged() {
   saveDraft();
+  updateQrHint();
   updateCcRows();
   updateSendState();
   schedulePreview();
@@ -622,6 +769,14 @@ for (const kind of ['cc', 'bcc']) {
     }
     updateCcRows();
   });
+}
+
+// Tell the user where the QR code will end up.
+const HAS_QR = /\{\{\s*qr\s*\}\}/i;
+function updateQrHint() {
+  $('#qr-hint').textContent = HAS_QR.test($('#em-body').value)
+    ? '✓ QR code goes where {{qr}} is'
+    : 'No {{qr}} yet: the QR code won’t show in the message (only attached as a PNG)';
 }
 
 // Placeholder buttons insert {{name}} etc. where the cursor is.
@@ -674,13 +829,22 @@ function clearPreview(message) {
   $('#pv-frame').srcdoc = '';
   $('#pv-prev').disabled = true;
   $('#pv-next').disabled = true;
+  previewPerson = null;
+  $('#pv-edit').disabled = true;
+  $('#pv-remove').disabled = true;
+  $('#pv-edited').classList.add('hidden');
+  closeEditor();
   updateSendState();
 }
 
 async function loadPreview(index) {
   const d = draft();
   if (!participants.length) return clearPreview('Import participants to see a preview');
-  if (!recipients().length) return clearPreview('Everyone has already received their QR code. Choose “Everyone” to send again.');
+  if (!recipients().length) {
+    return clearPreview(excluded.length
+      ? 'Everyone was removed from this send. Restore people in the Recipients tab.'
+      : 'Everyone has already received their QR code. Choose “Everyone” to send again.');
+  }
   if (!d.subject.trim() || !d.body.trim()) return clearPreview('Write a subject and message to see the preview');
   const key = draftKey();
   try {
@@ -689,6 +853,11 @@ async function loadPreview(index) {
     previewIndex = r.index;
     previewTotal = r.total;
     previewKey = key;
+    if (!previewPerson || previewPerson.id !== r.participant.id) closeEditor();
+    previewPerson = r.participant;
+    $('#pv-edit').disabled = false;
+    $('#pv-remove').disabled = false;
+    $('#pv-edited').classList.toggle('hidden', !r.edited);
     $('#pv-name').textContent = r.participant.name;
     $('#pv-counter').textContent = `Preview ${r.index + 1} of ${r.total}`;
     $('#pv-subject').textContent = r.subject;
@@ -697,7 +866,7 @@ async function loadPreview(index) {
     $('#pv-bcc').textContent = r.bcc.join(', ');
     $('#pv-cc-line').classList.toggle('hidden', !r.cc.length);
     $('#pv-bcc-line').classList.toggle('hidden', !r.bcc.length);
-    $('#pv-frame').srcdoc = `<body style="margin:18px">${r.html}</body>`;
+    $('#pv-frame').srcdoc = `<body style="margin:18px">${r.html}</body>`; // height is fitted on load
     $('#pv-prev').disabled = r.index === 0;
     $('#pv-next').disabled = r.index >= r.total - 1;
     updateSendState();
@@ -706,6 +875,17 @@ async function loadPreview(index) {
   }
 }
 
+// Grow the preview to fit the whole email, so the QR code is never cut off.
+$('#pv-frame').addEventListener('load', () => {
+  const f = $('#pv-frame');
+  try {
+    const doc = f.contentDocument;
+    const fit = () => (f.style.height = Math.max(200, doc.documentElement.scrollHeight) + 'px');
+    fit();
+    doc.querySelectorAll('img').forEach((img) => img.addEventListener('load', fit));
+  } catch { /* keep the default height */ }
+});
+
 $('#pv-prev').addEventListener('click', () => loadPreview(previewIndex - 1));
 $('#pv-next').addEventListener('click', () => loadPreview(previewIndex + 1));
 document.addEventListener('keydown', (e) => {
@@ -713,6 +893,71 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowLeft' && previewIndex > 0) loadPreview(previewIndex - 1);
   if (e.key === 'ArrowRight' && previewIndex < previewTotal - 1) loadPreview(previewIndex + 1);
 });
+
+// ---- Edit one person's email, or remove them from this send ----
+
+/** Fill in {{name}}, {{email}}, {{id}} so the editor shows what this person will read. {{qr}} stays. */
+function fillFor(text, p) {
+  return String(text || '').replace(/\{\{\s*(name|email|id)\s*\}\}/gi, (m, k) => p[k.toLowerCase()]);
+}
+
+function openEditor() {
+  const p = previewPerson;
+  if (!p) return;
+  const o = overrides[p.id];
+  const d = draft();
+  $('#pv-ed-name').textContent = p.name;
+  $('#pv-ed-subject').value = o ? o.subject : fillFor(d.subject, p);
+  let body = o ? o.body : fillFor(d.body, p);
+  $('#pv-ed-body').value = body;
+  $('#pv-ed-reset').classList.toggle('hidden', !o);
+  $('#pv-editor').classList.remove('hidden');
+  $('#pv-edit').classList.add('hidden');
+  $('#pv-ed-body').focus();
+}
+function closeEditor() {
+  $('#pv-editor').classList.add('hidden');
+  $('#pv-edit').classList.remove('hidden');
+}
+
+$('#pv-edit').addEventListener('click', openEditor);
+$('#pv-ed-cancel').addEventListener('click', closeEditor);
+$('#pv-ed-save').addEventListener('click', () => {
+  const p = previewPerson;
+  const subject = $('#pv-ed-subject').value.trim();
+  const body = $('#pv-ed-body').value.trim();
+  if (!p) return;
+  if (!subject || !body) return toast('Subject and message cannot be empty', true);
+  overrides[p.id] = { subject, body };
+  closeEditor();
+  toast(`Saved a custom email for ${p.name}`);
+  renderRecipients();
+  draftChanged();
+});
+$('#pv-ed-reset').addEventListener('click', () => {
+  const p = previewPerson;
+  if (!p) return;
+  delete overrides[p.id];
+  closeEditor();
+  toast(`${p.name} gets the main message again`);
+  renderRecipients();
+  draftChanged();
+});
+
+function excludePerson(id) {
+  const p = participants.find((x) => x.id === id);
+  if (!p || excluded.includes(id)) return;
+  excluded.push(id);
+  renderRecipients();
+  draftChanged();
+  toast(`${p.name} removed from this send`);
+}
+function restorePerson(id) {
+  excluded = id ? excluded.filter((x) => x !== id) : [];
+  renderRecipients();
+  draftChanged();
+}
+$('#pv-remove').addEventListener('click', () => previewPerson && excludePerson(previewPerson.id));
 
 // ---- Preview / Recipients tabs ----
 
@@ -735,13 +980,30 @@ function renderRecipients() {
             : p.qr_error
               ? `<span class="tag tag-red" title="${escapeHtml(p.qr_error)}">Failed</span>`
               : '<span class="tag tag-gray">Not sent</span>';
-          return `<li data-i="${i}"><div class="who"><b>${escapeHtml(p.name)}</b><span>${escapeHtml(p.email)}</span></div>${tag}</li>`;
+          const edited = overrides[p.id] ? '<span class="tag tag-blue">Edited</span>' : '';
+          return `<li data-i="${i}"><div class="who"><b>${escapeHtml(p.name)}</b><span>${escapeHtml(p.email)}</span></div>${edited}${tag}
+            <button class="trash-btn" data-remove="${escapeHtml(p.id)}" title="Remove from this send" aria-label="Remove ${escapeHtml(p.name)} from this send"></button></li>`;
         })
         .join('')
-    : `<li class="empty-row">${participants.length ? 'Everyone already has their QR code' : 'No participants yet'}</li>`;
+    : `<li class="empty-row">${!participants.length ? 'No participants yet' : excluded.length ? 'Everyone was removed from this send' : 'Everyone already has their QR code'}</li>`;
+
+  // People removed from this send, with a way to put them back.
+  const removed = excluded.map((id) => participants.find((p) => p.id === id)).filter(Boolean);
+  const box = $('#rcpt-removed');
+  box.classList.toggle('hidden', !removed.length);
+  box.innerHTML = removed.length
+    ? `<div class="head"><b>Removed from this send · ${removed.length}</b><button type="button" class="link-btn" data-restore="*">Restore all</button></div>
+       <ul>${removed.map((p) => `<li><span>${escapeHtml(p.name)} · ${escapeHtml(p.email)}</span><button type="button" class="link-btn" data-restore="${escapeHtml(p.id)}">Restore</button></li>`).join('')}</ul>`
+    : '';
 }
+$('#rcpt-removed').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-restore]');
+  if (b) restorePerson(b.dataset.restore === '*' ? null : b.dataset.restore);
+});
 // Click a recipient → see their email.
 $('#rcpt-list').addEventListener('click', (e) => {
+  const del = e.target.closest('button[data-remove]');
+  if (del) return excludePerson(del.dataset.remove);
   const li = e.target.closest('li[data-i]');
   if (!li) return;
   showTab('preview');
@@ -824,14 +1086,19 @@ async function startSend({ retry = false } = {}) {
   if (!n) return toast('Nobody left to send to', true);
   const mins = Math.max(1, Math.ceil((n * 1.6) / 60));
   const row = (label, value) => `<li><span>${label}</span><span>${value}</span></li>`;
+  const noQr = !HAS_QR.test(d.body)
+    ? '<div class="notice">⚠ Your message has no <b>{{qr}}</b>, so the QR code will not show inside the email. It is only attached as a PNG file.</div>'
+    : '';
   const ok = await confirmDialog({
     title: retry ? `Retry ${plural(n, 'email')}?` : `Send ${plural(n, 'email')}?`,
-    html: `Each person gets their own email with their QR code.
+    html: `${noQr}Each person gets their own email with their QR code.
       <ul class="confirm-list">
         ${row('To', `${n} participant${n === 1 ? '' : 's'} ${d.onlyUnsent ? '(not sent yet)' : '(everyone)'}`)}
         ${d.cc.length ? row('Cc', escapeHtml(d.cc.join(', ')) + ` <span class="muted">· ${n} copies each</span>`) : ''}
         ${d.bcc.length ? row('Bcc', escapeHtml(d.bcc.join(', ')) + ` <span class="muted">· ${n} copies each</span>`) : ''}
         ${row('Subject', escapeHtml(d.subject))}
+        ${Object.keys(d.overrides).length ? row('Edited', `${plural(Object.keys(d.overrides).length, 'person').replace('persons', 'people')} with their own version`) : ''}
+        ${d.exclude.length ? row('Removed', `${d.exclude.length} not included`) : ''}
         ${row('Time', `about ${mins} min`)}
       </ul>`,
     okText: `Send ${plural(n, 'email')}`,
@@ -942,6 +1209,10 @@ async function openEmailPage() {
   } catch (err) {
     return toast(err.message, true);
   }
+  // Forget removed/edited entries for people who no longer exist.
+  const ids = new Set(participants.map((p) => p.id));
+  excluded = excluded.filter((id) => ids.has(id));
+  overrides = Object.fromEntries(Object.entries(overrides).filter(([id]) => ids.has(id)));
   renderGmail();
   renderRecipients();
   updateCcRows();
@@ -975,10 +1246,13 @@ async function init() {
       $('#em-body').value = saved.body || '';
       cc.set(saved.cc);
       bcc.set(saved.bcc);
+      excluded = Array.isArray(saved.exclude) ? saved.exclude : [];
+      overrides = saved.overrides && typeof saved.overrides === 'object' ? saved.overrides : {};
       setToMode(saved.toMode || 'unsent');
     }
   } catch { /* ignore */ }
 
+  updateQrHint();
   showPage();
   refreshStats();
   setInterval(refreshStats, 4000); // keeps numbers fresh if a second laptop is also scanning

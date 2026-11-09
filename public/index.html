@@ -50,23 +50,56 @@
 
       <!-- ===== Home ===== -->
       <section class="page" id="page-home">
-        <h1>Overview</h1>
-        <h2 class="section-title">Today <span class="count" id="home-pct">0%</span></h2>
-        <div class="folders">
-          <div class="folder f-lavender">
-            <span class="folder-label">Participants</span>
-            <div class="folder-num" id="home-total">0</div>
-            <div class="folder-foot"><span>imported from CSV</span><a href="#participants">View</a></div>
+        <div class="home-head">
+          <div>
+            <h1>Overview</h1>
+            <div class="muted" id="home-date">Today</div>
           </div>
-          <div class="folder f-blue">
-            <span class="folder-label">Present</span>
-            <div class="folder-num" id="home-checked">0</div>
-            <div class="folder-foot"><span id="home-remaining">0 still to arrive</span><a href="#scan">Scan</a></div>
+          <a class="btn btn-scan" href="#scan">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16"/></svg>Open scanner
+          </a>
+        </div>
+
+        <div class="home-grid">
+          <div class="hero-card">
+            <div class="ring">
+              <svg viewBox="0 0 120 120" aria-hidden="true">
+                <circle class="ring-bg" cx="60" cy="60" r="52"/>
+                <circle class="ring-fg" id="home-ring" cx="60" cy="60" r="52"/>
+              </svg>
+              <div class="ring-label"><b id="home-pct">0%</b><span>here today</span></div>
+            </div>
+            <div class="hero-text">
+              <div class="hero-kicker"><span class="dot dot-green"></span>Present today</div>
+              <div class="hero-num"><b id="home-checked">0</b><span>/ <span id="home-total">0</span></span></div>
+              <div class="muted" id="home-remaining">0 still to arrive</div>
+              <a class="hero-link" href="#participants">View participants →</a>
+            </div>
           </div>
-          <div class="folder f-peach">
-            <span class="folder-label">QR codes sent</span>
-            <div class="folder-num" id="home-sent">0</div>
-            <div class="folder-foot"><span id="home-failed">0 failed</span><a href="#email">Send</a></div>
+
+          <div class="tile t-blue">
+            <div class="tile-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16"/></svg></div>
+            <div class="tile-label">Check-ins today</div>
+            <div class="tile-num" id="home-scans">0</div>
+            <div class="tile-sub">every scan is counted</div>
+          </div>
+
+          <div class="tile t-pink">
+            <div class="tile-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/></svg></div>
+            <div class="tile-label">QR codes sent</div>
+            <div class="tile-num"><span id="home-sent">0</span><small> / <span id="home-total2">0</span></small></div>
+            <div class="tile-sub"><span id="home-failed">0 not sent yet</span> · <a href="#email">Send</a></div>
+          </div>
+        </div>
+
+        <div class="home-cols">
+          <div class="panel">
+            <h3>Attendance by day</h3>
+            <div id="home-days" class="days"></div>
+          </div>
+          <div class="panel">
+            <h3>Recent check-ins</h3>
+            <ul id="home-recent" class="recent"></ul>
           </div>
         </div>
       </section>
@@ -82,14 +115,14 @@
                 <svg class="ico" viewBox="0 0 24 24"><path d="M12 15V3m0 12-4-4m4 4 4-4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>Export
               </button>
               <div class="menu" id="menu-export">
-                <a href="/api/export/all.csv" download><b>All participants</b><span>Everyone, as CSV</span></a>
-                <a href="/api/export/checked-in.csv" download><b>Present only</b><span>In arrival order, as CSV</span></a>
+                <a href="/api/export/all.csv" download><b>All participants</b><span>With check-ins per day, as CSV</span></a>
+                <a href="/api/export/present.csv" download><b>Present Participants</b><span>Only participants who have checked in</span></a>
               </div>
             </div>
             <div class="menu-wrap">
               <button class="btn btn-light icon-only" id="btn-more" aria-label="More">⋯</button>
               <div class="menu" id="menu-more">
-                <button class="danger-item" id="delete-all"><b>Delete all participants</b><span>Start over for a new event</span></button>
+                <button class="danger-item" id="delete-all"><b>Delete all participants</b></button>
               </div>
             </div>
           </div>
@@ -98,15 +131,15 @@
         <div class="filterbar">
           <div class="segmented" id="p-tabs">
             <button data-filter="all" class="on">All <span id="tab-all">0</span></button>
-            <button data-filter="in">Present <span id="tab-in">0</span></button>
-            <button data-filter="out">Not yet <span id="tab-out">0</span></button>
+            <button data-filter="in">Present today <span id="tab-in">0</span></button>
+            <button data-filter="out">Not yet today <span id="tab-out">0</span></button>
           </div>
           <input id="p-search" class="pill pill-input" placeholder="Search name or email" autocomplete="off">
         </div>
 
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>Name</th><th>Email</th><th>Check-in hour</th><th>Check-in day</th><th>QR</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Check-ins</th><th>Last check-in</th><th>QR</th><th>Today</th><th></th></tr></thead>
             <tbody id="p-rows"></tbody>
           </table>
           <div id="p-empty" class="empty hidden">No participants yet. <a href="#import">Import a CSV</a> to get started.</div>
@@ -115,13 +148,19 @@
 
       <!-- ===== Import ===== -->
       <section class="page" id="page-import">
-        <h1>Import CSV</h1>
-        <div class="import-box">
+        <div class="import-center">
+          <h1>Import CSV</h1>
+          <p class="muted page-sub">Add your whole participant list at once. Each person gets their own QR code.</p>
           <label class="drop" id="drop">
             <input type="file" id="csv-file" accept=".csv,text/csv" hidden>
-            <div class="drop-icon"><svg viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg></div>
-            <div class="drop-title">Choose a CSV file or drag it here</div>
-            <div class="muted small">Needs a <code>name</code> and an <code>email</code> column. People already in the list are skipped.</div>
+            <div class="drop-art" aria-hidden="true">
+              <div class="drop-sheet"><span></span><span></span><span></span><span></span></div>
+              <div class="drop-icon"><svg viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg></div>
+            </div>
+            <div class="drop-title">Drop your CSV file here</div>
+            <div class="muted small">or</div>
+            <span class="btn drop-btn">Choose file</span>
+            <div class="muted small drop-foot">.csv files up to 10 MB · people already in the list are skipped</div>
           </label>
           <div id="import-result"></div>
         </div>
@@ -178,16 +217,14 @@
               <span class="c-label">Subject</span>
               <input id="em-subject" class="c-input" placeholder="Your ticket for {{name}}" autocomplete="off">
             </div>
-            <textarea id="em-body" class="c-body" rows="9" placeholder="Hi {{name}},&#10;&#10;Thank you for registering! Please show the QR code below at the entrance."></textarea>
+            <textarea id="em-body" class="c-body" rows="9" placeholder="Hi {{name}},&#10;&#10;Thank you for registering! Please show this QR code at the entrance:&#10;{{qr}}&#10;See you there!"></textarea>
             <div class="c-insert">
               <span class="muted small">Insert</span>
               <button type="button" class="chip" data-ph="{{name}}">name</button>
               <button type="button" class="chip" data-ph="{{email}}">email</button>
               <button type="button" class="chip" data-ph="{{id}}">ID</button>
-            </div>
-            <div class="c-attach">
-              <div class="qr-thumb"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h8v8H3zm2 2v4h4V5zm8-2h8v8h-8zm2 2v4h4V5zM3 13h8v8H3zm2 2v4h4v-4zm8-2h3v3h-3zm5 0h3v3h-3zm-5 5h3v3h-3zm5 0h3v3h-3z"/></svg></div>
-              <div><b>Personal QR code</b><div class="muted small">Added under your message for each person, and attached as a PNG.</div></div>
+              <button type="button" class="chip chip-qr" data-ph="{{qr}}" title="Put the QR code where your cursor is">qr</button>
+              <span class="muted small c-insert-hint" id="qr-hint"></span>
             </div>
             <div class="c-foot">
               <button class="btn btn-light" id="btn-test">Send test to me</button>
@@ -211,6 +248,23 @@
                 <div class="pv-who"><b id="pv-name">—</b><span class="muted small" id="pv-counter"></span></div>
                 <button class="icon-btn" id="pv-next" aria-label="Next">›</button>
               </div>
+              <div class="pv-actions">
+                <span class="tag tag-blue hidden" id="pv-edited">Edited for this person</span>
+                <button class="btn btn-light btn-sm" id="pv-edit" disabled>Edit this email</button>
+                <button class="trash-btn" id="pv-remove" title="Remove this person from this send" aria-label="Remove this person from this send" disabled></button>
+              </div>
+              <div class="pv-editor hidden" id="pv-editor">
+                <div class="muted small">Changes apply to <b id="pv-ed-name"></b> only. Everyone else gets the main message.</div>
+                <input id="pv-ed-subject" class="input" placeholder="Subject" autocomplete="off">
+                <textarea id="pv-ed-body" class="input pv-ed-body" rows="10"></textarea>
+                <div class="muted small">Type <code>{{qr}}</code> where the QR code should go.</div>
+                <div class="actions">
+                  <button class="btn btn-light btn-sm hidden" id="pv-ed-reset">Use main message</button>
+                  <span style="flex:1"></span>
+                  <button class="btn btn-light btn-sm" id="pv-ed-cancel">Cancel</button>
+                  <button class="btn btn-sm" id="pv-ed-save">Save for this person</button>
+                </div>
+              </div>
               <div class="mail">
                 <div class="mail-head">
                   <div class="mail-subject" id="pv-subject">Write a subject and message to see the preview</div>
@@ -218,12 +272,13 @@
                   <div class="mail-line hidden" id="pv-cc-line"><span>Cc</span><span id="pv-cc"></span></div>
                   <div class="mail-line hidden" id="pv-bcc-line"><span>Bcc</span><span id="pv-bcc"></span></div>
                 </div>
-                <iframe id="pv-frame" class="pv-frame" title="Email preview" sandbox=""></iframe>
+                <iframe id="pv-frame" class="pv-frame" title="Email preview" sandbox="allow-same-origin"></iframe>
               </div>
             </div>
 
             <div id="tab-recipients" class="hidden">
               <ul class="rcpt" id="rcpt-list"></ul>
+              <div class="rcpt-removed hidden" id="rcpt-removed"></div>
             </div>
           </div>
         </div>
@@ -260,8 +315,7 @@
 <!-- ============ Full-screen scanner ============ -->
 <div id="scanner" class="scanner hidden" aria-label="QR scanner">
   <div id="reader" class="reader"></div>
-  <div class="scan-frame" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-
+  
   <button class="scan-back" id="scan-back" aria-label="Back">
     <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
   </button>
@@ -305,6 +359,19 @@
     <div class="qr-name" id="qr-name"></div>
     <div class="muted small" id="qr-meta"></div>
     <a class="btn btn-light" id="qr-download" download>Download PNG</a>
+  </form>
+</dialog>
+
+<!-- Attendance history dialog -->
+<dialog id="hist-dialog" class="dialog hist-dialog">
+  <form method="dialog">
+    <button class="dialog-x" value="close" aria-label="Close">×</button>
+    <h3 id="hist-name"></h3>
+    <div class="muted small" id="hist-meta"></div>
+    <div id="hist-body" class="hist-body"></div>
+    <div class="actions right">
+      <button type="button" class="btn" id="hist-add">Check in now</button>
+    </div>
   </form>
 </dialog>
 
