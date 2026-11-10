@@ -17,16 +17,35 @@ process.env.SEND_DELAY_MS = '0';
 process.env.GMAIL_USER = '';
 process.env.GMAIL_APP_PASSWORD = '';
 process.env.ALLOWED_HOSTS = '';
+process.env.ADMIN_USER = '';
+process.env.ADMIN_PASSWORD_HASH = '';
+process.env.SESSION_SECRET = '';
 
 const app = require('../server');
 
 let server;
 let base;
+let sessionCookie = '';
+const realFetch = globalThis.fetch;
+// Every request in the tests is logged in, unless it passes { anonymous: true }.
+globalThis.fetch = (url, opts = {}) => {
+  const headers = { ...(opts.headers || {}) };
+  if (!opts.anonymous && sessionCookie) headers.Cookie = sessionCookie;
+  return realFetch(url, { ...opts, headers });
+};
 
 before(async () => {
   server = app.listen(0); // 0 = any free port
   await new Promise((r) => server.once('listening', r));
   base = `http://localhost:${server.address().port}`;
+
+  // Create the admin account, then send the login cookie with every request in these tests.
+  const res = await realFetch(base + '/api/auth/setup', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'correct horse' }),
+  });
+  assert.equal(res.status, 200, 'account setup works');
+  sessionCookie = res.headers.get('set-cookie').split(';')[0];
 });
 
 after(() => {
@@ -116,7 +135,8 @@ test('export of all participants downloads as CSV', async () => {
   const text = await res.text();
   const lines = text.trim().split('\r\n');
   assert.equal(lines.length, 4); // header + 3 people
-  assert.match(lines[0], /^﻿?Name,Email,Check-ins,Last check-in,Today/);
+  assert.match(lines[0], /^﻿?Name,Email,Check-ins,From team/);
+  assert.ok(text.includes(',TSA'), 'organization is used as the team');
   assert.ok(text.includes('"Chan, Sophea"'), 'commas inside names must be quoted');
   assert.ok(text.includes('សុខ ដារ៉ា'), 'Khmer names must survive');
 });
@@ -127,8 +147,8 @@ test('present participants export only includes people who checked in', async ()
   assert.match(res.headers.get('content-disposition'), /participants-present-.*\.csv/);
   const lines = (await res.text()).trim().split('\r\n');
   assert.equal(lines.length, 2); // header + 1 person
-  assert.match(lines[0], /^﻿?Name,Email,Check-ins,Last check-in,Today,"\w{3}, \w{3} \d+, \d{4}"/);
-  assert.match(lines[1], /,Present,"?\d{1,2}:\d{2} (AM|PM)/);
+  assert.match(lines[0], /^﻿?Name,Email,Check-ins,From team,"\w{3}, \w{3} \d+, \d{4}"/);
+  assert.match(lines[1], /,1,[^,]*,\d{1,2}:\d{2} (AM|PM)/);
 });
 
 test('attendance log export has one row per check-in', async () => {
@@ -317,7 +337,8 @@ test('connect Gmail rejects a normal password before contacting Google', async (
   const res = await post('/api/email/settings', { gmailUser: 'me@gmail.com', appPassword: 'my normal password1' });
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /App Password/);
-  assert.ok(!fs.existsSync(process.env.ENV_FILE), 'nothing saved on failure');
+  const env = fs.existsSync(process.env.ENV_FILE) ? fs.readFileSync(process.env.ENV_FILE, 'utf8') : '';
+  assert.ok(!env.includes('GMAIL_USER'), 'nothing saved on failure');
 });
 
 test('.env writer updates keys and keeps other lines', () => {
@@ -382,4 +403,62 @@ test('preview and send skip removed people and use per-person edits', async () =
   while (mailer.job.running) await new Promise((res) => setTimeout(res, 5));
   assert.equal(seen[0].subject, 'Main');
   assert.equal(seen[1].subject, 'Custom');
+});
+
+// ---------------- Login ----------------
+
+test('login: without logging in, pages go to the login page and the API says 401', async () => {
+  const page = await fetch(base + '/', { anonymous: true, redirect: 'manual' });
+  assert.equal(page.status, 302);
+  assert.equal(page.headers.get('location'), '/login.html');
+  const api = await fetch(base + '/api/participants', { anonymous: true });
+  assert.equal(api.status, 401);
+  const exp = await fetch(base + '/api/export/all.csv', { anonymous: true });
+  assert.equal(exp.status, 401, 'exports are protected');
+  const login = await fetch(base + '/login.html', { anonymous: true });
+  assert.equal(login.status, 200, 'the login page itself is public');
+  const forged = await fetch(base + '/api/participants', { anonymous: true, headers: { Cookie: 'session=eyJ1IjoiYWRtaW4ifQ.fake' } });
+  assert.equal(forged.status, 401, 'a made-up cookie is rejected');
+});
+
+test('login: the password is stored as a hash, never as text', () => {
+  const env = fs.readFileSync(process.env.ENV_FILE, 'utf8');
+  assert.ok(!env.includes('correct horse'));
+  assert.match(env, /ADMIN_PASSWORD_HASH=scrypt\$/);
+});
+
+test('login: a second account cannot be created', async () => {
+  const res = await post('/api/auth/setup', { username: 'evil', password: 'password123' });
+  assert.equal(res.status, 409);
+});
+
+test('login: right password logs in, wrong one is refused, then locked after 5 tries', async () => {
+  const login = (password) => fetch(base + '/api/auth/login', {
+    anonymous: true, method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'Admin', password }),
+  });
+  const ok = await login('correct horse');
+  assert.equal(ok.status, 200);
+  const cookie = ok.headers.get('set-cookie');
+  assert.match(cookie, /HttpOnly/);
+  assert.match(cookie, /SameSite=Strict/);
+  const list = await fetch(base + '/api/participants', { anonymous: true, headers: { Cookie: cookie.split(';')[0] } });
+  assert.equal(list.status, 200);
+
+  for (let i = 0; i < 5; i++) assert.equal((await login('wrong password')).status, 401);
+  const locked = await login('correct horse');
+  assert.equal(locked.status, 429, 'locked even with the right password after 5 wrong tries');
+  require('../lib/auth').clearFails('::1');
+  require('../lib/auth').clearFails('::ffff:127.0.0.1');
+  require('../lib/auth').clearFails('127.0.0.1');
+});
+
+test('login: changing the password logs out old sessions', async () => {
+  const oldCookie = sessionCookie;
+  const res = await post('/api/auth/password', { current: 'correct horse', password: 'new password 1' });
+  assert.equal(res.status, 200);
+  sessionCookie = res.headers.get('set-cookie').split(';')[0];
+  const old = await fetch(base + '/api/participants', { anonymous: true, headers: { Cookie: oldCookie } });
+  assert.equal(old.status, 401, 'the old session no longer works');
+  assert.equal((await get('/api/participants')).status, 200, 'the new session works');
 });

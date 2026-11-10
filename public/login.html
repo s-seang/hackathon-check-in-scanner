@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · Event Check-in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="login-logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h8v8H3zm2 2v4h4V5zm8-2h8v8h-8zm2 2v4h4V5zM3 13h8v8H3zm2 2v4h4v-4zm8-2h3v3h-3zm5 0h3v3h-3zm-5 5h3v3h-3zm5 0h3v3h-3z"/></svg>
+    </div>
+    <h1 id="login-title">Log in</h1>
+    <p class="muted" id="login-sub">Sign in to manage check-in.</p>
+
+    <form id="login-form" class="login-form hidden" autocomplete="on">
+      <label class="field-label" for="username">Username</label>
+      <input class="input" id="username" name="username" autocomplete="username" required maxlength="50" autocapitalize="off" spellcheck="false">
+
+      <label class="field-label" for="password">Password</label>
+      <div class="pw-wrap">
+        <input class="input" id="password" name="password" type="password" required maxlength="200">
+        <button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button>
+      </div>
+
+      <div id="confirm-wrap" class="hidden">
+        <label class="field-label" for="password2">Confirm password</label>
+        <input class="input" id="password2" type="password" autocomplete="new-password" maxlength="200">
+      </div>
+
+      <p class="form-error" id="login-error" role="alert"></p>
+      <button class="btn login-btn" id="login-btn">Log in</button>
+    </form>
+
+    <div id="login-blocked" class="notice hidden"></div>
+  </main>
+  <script src="login.js"></script>
+</body>
+</html>

@@ -1,12 +1,26 @@
 # Security
 
 This app holds personal data (names and emails) and can send email from your Gmail account.
-There is no login, so the main protection is that **only the laptop running the app can open it**.
+**Everyone must log in** before they can see any page or data. On top of that, by default
+**only the laptop running the app can open it**.
+
+## Login
+
+- On the first visit, the laptop running the app shows **Create your account**: choose a username and a password (8+ characters).
+  This can only be done on that laptop, so nobody else on the network can claim the account.
+- After that, every page, export and API call needs a login. Without one, you are sent to the login page.
+- The password is saved in `.env` as a **scrypt hash** (`ADMIN_PASSWORD_HASH`), never as plain text.
+- A login lasts **12 hours**, in an `HttpOnly`, `SameSite=Strict` cookie signed with `SESSION_SECRET` (made automatically in `.env`).
+- After **5 wrong passwords**, that device must wait 15 minutes.
+- **Change password** is at the bottom of the sidebar. It logs out every other device.
+- **Forgot the password?** Stop the app, delete the `ADMIN_USER` and `ADMIN_PASSWORD_HASH` lines from `.env`, start it again,
+  and create a new account on the laptop.
 
 ## Quick checklist before the event
 
 - [ ] Keep `HOST=127.0.0.1` (the default) unless other devices really need to connect.
-- [ ] Lock the laptop when you step away. Anyone using it can open the app.
+- [ ] Use a strong password, and only share it with staff who need it.
+- [ ] Lock the laptop and **Log out** when you step away.
 - [ ] Never share or commit `.env`. It contains your Gmail App Password.
 - [ ] After the event: export what you need, delete the participants, and remove the Gmail App Password at https://myaccount.google.com/apppasswords.
 
@@ -14,6 +28,7 @@ There is no login, so the main protection is that **only the laptop running the 
 
 | Protection | What it stops | Where |
 |---|---|---|
+| **Login required** for every page and API call; hashed password; 5-try lockout | Anyone without the password seeing or changing data | `lib/auth.js`, `server.js` |
 | **Only this computer can connect** by default (`HOST=127.0.0.1`) | Other people on the venue Wi‑Fi reaching the app | `server.js` |
 | **CSRF protection.** Changes must be same-site JSON requests. | A malicious website you visit secretly using the app from your browser | `csrfCheck()` in `lib/security.js` |
 | **Host check** | "DNS rebinding", where a website points its domain at your laptop to read the app | `hostCheck()` |
@@ -34,9 +49,9 @@ Run `npm test` to check all of the above.
 
 ## Letting other devices connect (door laptops, tablets)
 
-> ⚠ There is no login. If you allow other devices, **anyone on the same network** can open the app,
-> see every participant, export the list and send emails. Only do this on a private network
-> you control (your own hotspot or router), never on open venue Wi‑Fi.
+> Other devices need the username and password to get in. Still, prefer a private network you
+> control (your own hotspot or router), and turn on HTTPS (step 3) so the password is not sent
+> over the Wi‑Fi unencrypted.
 
 1. Find this laptop's IP address (macOS: System Settings → Wi‑Fi → Details; Windows: `ipconfig`), e.g. `192.168.1.20`.
 2. In `.env`:

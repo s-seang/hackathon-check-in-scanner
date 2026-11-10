@@ -20,6 +20,10 @@ async function api(path, options = {}) {
   } catch {
     throw new Error('Cannot reach the server. Is it still running (npm start)?');
   }
+  if (res.status === 401) {
+    location.replace('/login.html'); // logged out or session expired
+    throw new Error('Please log in again.');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok && !data.status) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
@@ -387,6 +391,14 @@ async function loadParticipants() {
 
 const QR_ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h8v8H3zm2 2v4h4V5zm8-2h8v8h-8zm2 2v4h4V5zM3 13h8v8H3zm2 2v4h4v-4zm8-2h3v3h-3zm5 0h3v3h-3zm-5 5h3v3h-3zm5 0h3v3h-3z"/></svg>';
 
+/** The person's team from their imported CSV: a column with "team" in its name, or "organization". */
+function teamOf(p) {
+  const extra = p.extra || {};
+  const keys = Object.keys(extra);
+  const key = keys.find((k) => /team/i.test(k)) || keys.find((k) => /^(organi[sz]ation|org)$/i.test(k.trim()));
+  return key ? String(extra[key] || '') : '';
+}
+
 function renderParticipants() {
   const q = $('#p-search').value.trim().toLowerCase();
   const present = participants.filter((p) => p.checked_in).length;
@@ -398,8 +410,16 @@ function renderParticipants() {
   const list = participants.filter((p) => {
     if (pFilter === 'in' && !p.checked_in) return false;
     if (pFilter === 'out' && p.checked_in) return false;
-    return !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q) || p.id.toLowerCase().includes(q);
+    return !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || teamOf(p).toLowerCase().includes(q);
   });
+
+  // "By day" view: one section per day, with a numbered list of who checked in.
+  const dayKeys = [...new Set(participants.flatMap((p) => p.checkins.map(localDayKey)))].sort().reverse(); // newest day first
+  $('#tab-days').textContent = dayKeys.length;
+  const byDay = pFilter === 'days';
+  $('#p-table').classList.toggle('hidden', byDay);
+  $('#p-days').classList.toggle('hidden', !byDay);
+  if (byDay) return renderByDay(dayKeys, list);
 
   $('#p-empty').classList.toggle('hidden', participants.length > 0);
   $('#p-rows').innerHTML = list
@@ -414,11 +434,12 @@ function renderParticipants() {
         : `<button class="ci-btn ci-none" data-history="${id}"><span class="ci-text"><span>None yet</span></span></button>`;
       return `<tr>
         <td class="name">${escapeHtml(p.name)}</td>
-        <td>${escapeHtml(p.email)}</td>
+        <td class="email" title="${escapeHtml(p.email)}">${escapeHtml(p.email)}</td>
+        <td class="team" title="${escapeHtml(teamOf(p))}">${teamOf(p) ? escapeHtml(teamOf(p)) : '<span class="dim">—</span>'}</td>
         <td>${checkins}</td>
         ${p.checked_in_at ? `<td class="time last"><b>${fmtHour(p.checked_in_at)}</b><span>${p.checked_in ? 'Today' : fmtDay(p.checked_in_at)}</span></td>` : '<td class="time dim">—</td>'}
         <td><button class="qr-btn" data-qr="${escapeHtml(p.id)}" title="Show QR code">${QR_ICON}</button></td>
-        <td>${p.checked_in ? '<span class="status status-present">Present</span>' : '<span class="status status-absent">Not yet</span>'}</td>
+        <td>${p.checked_in ? '<span class="status status-present">Present</span>' : '<span class="status status-absent">Absent</span>'}</td>
         <td class="end"><button class="mark-btn" data-checkin="${id}" title="Add a check-in now">Check in</button><button class="trash-btn" data-del="${escapeHtml(p.id)}" title="Delete ${escapeHtml(p.name)}" aria-label="Delete ${escapeHtml(p.name)}"></button></td>
       </tr>`;
     })
@@ -432,6 +453,53 @@ $('#p-tabs').addEventListener('click', (e) => {
   pFilter = b.dataset.filter;
   $$('#p-tabs button').forEach((x) => x.classList.toggle('on', x === b));
   renderParticipants();
+});
+
+/** "2025-11-24" → "Monday 24th November, 2025" */
+function fmtDayHeading(key) {
+  const d = fromDayKey(key);
+  const n = d.getDate();
+  const suffix = n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th';
+  return `${d.toLocaleDateString('en-GB', { weekday: 'long' })} ${n}${suffix} ${d.toLocaleDateString('en-GB', { month: 'long' })}, ${d.getFullYear()}`;
+}
+
+function renderByDay(dayKeys, list) {
+  const box = $('#p-days');
+  const todayKey = localDayKey(new Date().toISOString());
+  if (!dayKeys.length) {
+    box.innerHTML = '<div class="day-card"><div class="empty">Nobody has checked in yet. Days appear here after the first check-in.</div></div>';
+    return;
+  }
+  box.innerHTML = dayKeys
+    .map((day) => {
+      // People who checked in that day, in order of their first check-in.
+      const people = list
+        .map((p) => ({ p, times: p.checkins.filter((c) => localDayKey(c) === day).sort() }))
+        .filter((x) => x.times.length)
+        .sort((a, b) => a.times[0].localeCompare(b.times[0]));
+      const scans = people.reduce((n, x) => n + x.times.length, 0);
+      const rows = people.length
+        ? people
+            .map(({ p, times }, i) => `<li>
+              <span class="row-num">${i + 1}.</span>
+              <button class="row-name" data-history="${escapeHtml(p.id)}" title="See every check-in"><b>${escapeHtml(p.name)}</b><span>${escapeHtml(p.email)}</span></button>
+              <span class="times">${times.map((t) => `<span class="time-chip">${fmtHour(t)}</span>`).join('')}</span>
+            </li>`)
+            .join('')
+        : '<li class="none">No matches for your search on this day.</li>';
+      return `<section class="day-card${day === todayKey ? ' is-today' : ''}">
+        <header>
+          <h3>${fmtDayHeading(day)}${day === todayKey ? ' <span class="tag tag-green">Today</span>' : ''}</h3>
+          <span class="muted small">${plural(people.length, 'person').replace('persons', 'people')} · ${plural(scans, 'check-in')}</span>
+        </header>
+        <ol>${rows}</ol>
+      </section>`;
+    })
+    .join('');
+}
+$('#p-days').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-history]');
+  if (b) openHistory(b.dataset.history);
 });
 
 // Buttons inside the table (one listener for all rows).
@@ -485,7 +553,7 @@ function renderHistory(id) {
   $('#hist-body').innerHTML = byDay.size
     ? [...byDay.entries()]
         .map(([day, list]) => `<div class="hist-day">
-          <div class="hist-day-title">${fmtLongDay(fromDayKey(day))}${day === todayKey ? ' <span class="tag tag-green">Today</span>' : ''}<span class="muted">${plural(list.length, 'check-in')}</span></div>
+          <div class="hist-day-title">${fmtDayHeading(day)}${day === todayKey ? ' <span class="tag tag-green">Today</span>' : ''}<span class="muted">${plural(list.length, 'check-in')}</span></div>
           <ol>${list.map((at, i) => `<li><span class="num">${i + 1}</span><span class="t">${new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             <button type="button" class="trash-btn" data-at="${escapeHtml(at)}" title="Remove this check-in" aria-label="Remove this check-in"></button></li>`).join('')}</ol>
         </div>`)
@@ -1227,6 +1295,43 @@ async function openEmailPage() {
   schedulePreview();
 }
 
+// ---------------- Account ----------------
+
+async function loadMe() {
+  try {
+    const s = await api('/api/auth/status');
+    $('#me-name').textContent = s.user || '';
+    $('#me-initial').textContent = (s.user || '?').charAt(0).toUpperCase();
+  } catch { /* the 401 handler sends us to the login page */ }
+}
+
+$('#btn-logout').addEventListener('click', async () => {
+  try { await api('/api/auth/logout', { method: 'POST', body: {} }); } catch { /* leaving anyway */ }
+  location.replace('/login.html');
+});
+
+$('#btn-password').addEventListener('click', () => {
+  $('#pw-form').reset();
+  $('#pw-error').textContent = '';
+  $('#pw-dialog').showModal();
+  $('#pw-current').focus();
+});
+$('#pw-cancel').addEventListener('click', () => $('#pw-dialog').close());
+$('#pw-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if ($('#pw-new').value !== $('#pw-new2').value) {
+    $('#pw-error').textContent = 'The two new passwords are not the same.';
+    return;
+  }
+  try {
+    await api('/api/auth/password', { method: 'POST', body: { current: $('#pw-current').value, password: $('#pw-new').value } });
+    $('#pw-dialog').close();
+    toast('Password changed');
+  } catch (err) {
+    $('#pw-error').textContent = err.message;
+  }
+});
+
 // ---------------- Start-up ----------------
 
 async function init() {
@@ -1253,6 +1358,7 @@ async function init() {
   } catch { /* ignore */ }
 
   updateQrHint();
+  loadMe();
   showPage();
   refreshStats();
   setInterval(refreshStats, 4000); // keeps numbers fresh if a second laptop is also scanning

@@ -8,7 +8,7 @@ A small web app for running check-in at an event:
 4. **Export** the full list, or an attendance log with every check-in by day and time, as CSV.
 
 Everything runs on your own laptop. Participant data is saved in `data/participants.json`.
-There is no login. By default only the laptop running the app can open it. See **[SECURITY.md](SECURITY.md)**.
+Everyone must **log in**. On the first visit, the laptop running the app asks you to create the admin username and password. By default only that laptop can open the app. See **[SECURITY.md](SECURITY.md)**.
 
 ---
 
@@ -98,7 +98,7 @@ You can leave the page while sending; it continues on the server. Come back to s
    Walk-ins: **Participants** → **+ Add**, then **Check in** or click the QR icon to show their code.
 
 ### After the event
-On **Participants**, click **Export** → **All participants** (one column per day with every check-in time that day) or **Present Participants** (only people who have checked in, same columns). The files open in Excel and Google Sheets.
+On **Participants**, click **Export** → **All participants** (one column per day with every check-in time that day) or **Present Participants** (only people who have checked in). Columns: Name, Email, Check-ins, From team, then one column per day with every check-in time. The files open in Excel and Google Sheets.
 
 ---
 

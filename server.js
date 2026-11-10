@@ -18,6 +18,7 @@ const store = require('./lib/store');
 const mailer = require('./lib/mailer');
 const security = require('./lib/security');
 const { audit } = require('./lib/audit');
+const auth = require('./lib/auth');
 const { parseParticipantsCsv, participantsToCsv, attendanceToCsv, EMAIL_RE } = require('./lib/csv');
 const { setEnvValues } = require('./lib/envfile');
 
@@ -43,12 +44,6 @@ app.disable('x-powered-by'); // don't advertise which server software we use
 app.use(security.securityHeaders);
 app.use(security.hostCheck(ALLOWED_HOSTS));
 
-app.use(express.static(path.join(__dirname, 'public')));
-// The QR scanner library, served from node_modules so it works without internet.
-app.get('/vendor/html5-qrcode.min.js', (req, res) =>
-  res.sendFile(require.resolve('html5-qrcode/html5-qrcode.min.js'))
-);
-
 // ---- Protections for the API ----
 app.use('/api', security.apiRateLimit, security.csrfCheck);
 // Only the CSV import may send a big body (up to 10 MB); everything else is limited to 100 KB.
@@ -62,6 +57,111 @@ const fail = (res, status, message) => res.status(status).json({ error: message 
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 // Read a text field from the request body, trimmed and limited in length.
 const field = (body, key) => String((body && body[key]) ?? '').trim();
+
+// ---------------- Login ----------------
+// Everything except the login page needs a logged-in session. See lib/auth.js.
+
+/** The secret that signs session cookies. Made once and kept in .env, so logins survive a restart. */
+function sessionSecret() {
+  if (!process.env.SESSION_SECRET) {
+    const secret = require('crypto').randomBytes(32).toString('hex');
+    setEnvValues(ENV_FILE, { SESSION_SECRET: secret });
+    process.env.SESSION_SECRET = secret;
+  }
+  return process.env.SESSION_SECRET;
+}
+const accountExists = () => Boolean(process.env.ADMIN_USER && process.env.ADMIN_PASSWORD_HASH);
+/** The logged-in username, or null. */
+function sessionUser(req) {
+  if (!accountExists()) return null;
+  const s = auth.readToken(sessionSecret(), auth.getCookie(req, auth.COOKIE), process.env.ADMIN_PASSWORD_HASH);
+  return s && s.u === process.env.ADMIN_USER ? s.u : null;
+}
+
+app.get('/api/auth/status', (req, res) => {
+  res.json({ accountExists: accountExists(), user: sessionUser(req), canCreateAccount: isLocal(req) });
+});
+
+// First visit: create the admin account. Only from the laptop running the app,
+// so nobody else on the network can claim it.
+app.post('/api/auth/setup', (req, res) => {
+  if (accountExists()) return fail(res, 409, 'An account already exists. Please log in.');
+  if (!isLocal(req)) return fail(res, 403, 'The account can only be created on the laptop running the app.');
+  const user = field(req.body, 'username').replace(/\s+/g, ' ');
+  const password = String((req.body && req.body.password) || '');
+  if (!/^[\w .@-]{3,50}$/.test(user)) return fail(res, 400, 'Username: 3–50 letters, numbers, spaces, dots, dashes or underscores.');
+  const bad = auth.checkNewPassword(password);
+  if (bad) return fail(res, 400, bad);
+  const hash = auth.hashPassword(password);
+  setEnvValues(ENV_FILE, { ADMIN_USER: user, ADMIN_PASSWORD_HASH: hash });
+  Object.assign(process.env, { ADMIN_USER: user, ADMIN_PASSWORD_HASH: hash });
+  auth.setSessionCookie(req, res, auth.makeToken(sessionSecret(), user, hash));
+  audit(req, 'account_created', { user });
+  res.json({ ok: true, user });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!accountExists()) return fail(res, 400, 'No account yet. Open the app on the laptop running it to create one.');
+  const wait = auth.lockedFor(req.ip);
+  if (wait) return fail(res, 429, `Too many wrong passwords. Try again in ${Math.ceil(wait / 60)} min.`);
+  const user = field(req.body, 'username').replace(/\s+/g, ' ');
+  const password = String((req.body && req.body.password) || '');
+  // Always check the password (even for a wrong username) so the timing gives nothing away.
+  const passOk = auth.verifyPassword(password, process.env.ADMIN_PASSWORD_HASH);
+  if (!passOk || user.toLowerCase() !== process.env.ADMIN_USER.toLowerCase()) {
+    auth.recordFail(req.ip);
+    audit(req, 'login_failed', { user: user.slice(0, 50) });
+    return fail(res, 401, 'Wrong username or password.');
+  }
+  auth.clearFails(req.ip);
+  auth.setSessionCookie(req, res, auth.makeToken(sessionSecret(), process.env.ADMIN_USER, process.env.ADMIN_PASSWORD_HASH));
+  audit(req, 'login', { user: process.env.ADMIN_USER });
+  res.json({ ok: true, user: process.env.ADMIN_USER });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  auth.clearSessionCookie(req, res);
+  res.json({ ok: true });
+});
+
+// Pages and files anyone may load, so the login page can show.
+const PUBLIC_FILES = new Set(['/login.html', '/login.js', '/styles.css', '/favicon.svg']);
+
+// The gate: no session → login page (for pages) or 401 (for the API).
+app.use((req, res, next) => {
+  if (PUBLIC_FILES.has(req.path)) return next();
+  const user = sessionUser(req);
+  if (user) {
+    req.user = user;
+    return next();
+  }
+  if (req.path.startsWith('/api/')) return fail(res, 401, 'Please log in.');
+  res.redirect(302, '/login.html');
+});
+
+// Change the password (needs the current one). Logs out every other device.
+app.post('/api/auth/password', (req, res) => {
+  const current = String((req.body && req.body.current) || '');
+  const next = String((req.body && req.body.password) || '');
+  if (!auth.verifyPassword(current, process.env.ADMIN_PASSWORD_HASH)) {
+    auth.recordFail(req.ip);
+    return fail(res, 400, 'Your current password is not correct.');
+  }
+  const bad = auth.checkNewPassword(next);
+  if (bad) return fail(res, 400, bad);
+  const hash = auth.hashPassword(next);
+  setEnvValues(ENV_FILE, { ADMIN_PASSWORD_HASH: hash });
+  process.env.ADMIN_PASSWORD_HASH = hash;
+  auth.setSessionCookie(req, res, auth.makeToken(sessionSecret(), process.env.ADMIN_USER, hash));
+  audit(req, 'password_changed');
+  res.json({ ok: true });
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+// The QR scanner library, served from node_modules so it works without internet.
+app.get('/vendor/html5-qrcode.min.js', (req, res) =>
+  res.sendFile(require.resolve('html5-qrcode/html5-qrcode.min.js'))
+);
 
 // ---------------- Settings & stats ----------------
 
@@ -426,6 +526,7 @@ function start() {
     const shown = HOST === '127.0.0.1' || HOST === '0.0.0.0' ? 'localhost' : HOST;
     console.log(`\n  Event check-in is running →  ${proto}://${shown}:${PORT}\n`);
     console.log(`  Data file: ${store.DATA_FILE}`);
+    if (!accountExists()) console.log(`  Login: no account yet. Open ${proto}://localhost:${PORT} on this laptop to create one.`);
     if (!mailer.isConfigured()) {
       console.log(`  Email: not set up (missing ${mailer.missingSettings().join(', ')} in .env). Everything else works.`);
     } else {
@@ -435,7 +536,7 @@ function start() {
       console.log('  Access: this computer only (set HOST=0.0.0.0 in .env to allow other devices).\n');
     } else {
       console.log(`  Access: other devices on the network can connect (HOST=${HOST}).`);
-      console.log('  ⚠  There is no login, so ANYONE on this network can open the app and see all participants.');
+      console.log('  Everyone must log in. Share the password only with staff.');
       if (proto === 'http') console.log('  ⚠  Not using HTTPS: data travels unencrypted over Wi-Fi. See SECURITY.md.');
       console.log('');
     }
